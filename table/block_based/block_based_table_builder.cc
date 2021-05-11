@@ -258,6 +258,7 @@ struct BlockBasedTableBuilder::Rep {
   // Buffers uncompressed data blocks to replay later. Needed when
   // compression dictionary is enabled so we can finalize the dictionary before
   // compressing any data blocks.
+  // TODO: Hui
   std::vector<std::string> data_block_buffers;
   BlockBuilder range_del_block;
 
