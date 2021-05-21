@@ -1007,9 +1007,55 @@ void BlockBasedTableBuilder::WriteBlock(BlockBuilder* block,
     assert(is_data_block);
     rep_->data_block_buffers.emplace_back(std::move(raw_block_contents));
     rep_->data_begin_offset += rep_->data_block_buffers.back().size();
-    return;
+    //TODO-DON'TCOMMIT: figure out the variable for data block size
+    //TODO-DON'TCOMMIT: better engineering on if-else return statement
+    //TODO-DON'TCOMMIT: understand EnterUnbuffered() better to see whether return is needed
+    if ReserveMemWithCache(data_block_buffers.back().size()){
+      return;
+    }else{
+      EnterUnbuffered();
+      return;
+    }
   }
   WriteBlock(raw_block_contents, handle, is_data_block);
+}
+
+//TODO-DON'TCOMMIT: rename and make it as a shared util function if needed
+//TODO-DON'TCOMMIT: figure out what should this function return
+bool BlockBasedTableBuilder::ReserveMemWithCache(size_t mem) {
+  //TODO-DON'TCOMMIT: figure out what would be right kSizeDummyEntry
+  const size_t kSizeDummyEntry = 256 * 1024;
+  bool cache_insertion_result = true;
+  //TODO-DON'TCOMMIT: figure out how to construct the cache rep in coding and understand its related operations
+  assert(cache_rep_ != nullptr);
+  //TODO-DON'TCOMMIT: figure out whether we need to lock here
+  // Use a mutex to protect various data structures. Can be optimized to a
+  // lock-free solution if it ends up with a performance bottleneck.
+  std::lock_guard<std::mutex> lock(cache_rep_->cache_mutex_);
+
+  size_t new_mem_used = memory_used_.load(std::memory_order_relaxed) + mem;
+  memory_used_.store(new_mem_used, std::memory_order_relaxed);
+  while (new_mem_used > cache_rep_->cache_allocated_size_) {
+    // Expand size by at least 256KB.
+    // Add a dummy record to the cache
+    Cache::Handle* handle = nullptr;
+    Status s =
+        cache_rep_->cache_->Insert(cache_rep_->GetNextCacheKey(), nullptr,
+                                   kSizeDummyEntry, nullptr, &handle);
+    s.PermitUncheckedError();  // TODO: What to do on error?
+    //TODO-DON'TCOMMIT: if there is an error, set cache_insertion_result = false
+    // We keep the handle even if insertion fails and a null handle is
+    // returned, so that when memory shrinks, we don't release extra
+    // entries from cache.
+    // Ideallly we should prevent this allocation from happening if
+    // this insertion fails. However, the callers to this code path
+    // are not able to handle failures properly. We'll need to improve
+    // it in the future.
+    cache_rep_->dummy_handles_.push_back(handle);
+    cache_rep_->cache_allocated_size_ += kSizeDummyEntry;
+    dummy_size_.fetch_add(kSizeDummyEntry, std::memory_order_relaxed);
+  }
+  return cache_insertion_result;
 }
 
 void BlockBasedTableBuilder::WriteBlock(const Slice& raw_block_contents,
