@@ -141,6 +141,10 @@ void GenericRateLimiter::Request(int64_t bytes, const Env::IOPriority pri,
     available_bytes_ -= bytes;
     total_bytes_through_[pri] += bytes;
     return;
+  } else {
+    bytes -= available_bytes_;
+    total_bytes_through_[pri] += available_bytes_;
+    available_bytes_ = 0;
   }
 
   // Request cannot be satisfied at this moment, enqueue
