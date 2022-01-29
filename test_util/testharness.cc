@@ -69,6 +69,8 @@ TestRegex::TestRegex(const char* pattern)
 
 const std::string& TestRegex::GetPattern() const { return pattern_; }
 
+// Sorry about code duplication with regex.cc, but it doesn't support LITE
+// due to exception handling
 class TestRegex::Impl : public std::regex {
  public:
   using std::regex::basic_regex;
