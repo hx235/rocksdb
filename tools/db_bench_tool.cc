@@ -3258,7 +3258,7 @@ class Benchmark {
         WaitForCompaction();
 #endif
       } else if (name == "flush") {
-        Flush();
+        method = &Benchmark::Flush;
       } else if (name == "crc32c") {
         method = &Benchmark::Crc32c;
       } else if (name == "xxhash") {
@@ -7605,6 +7605,11 @@ class Benchmark {
     for (const auto& db_with_cfh : multi_dbs_) {
       db_with_cfh.db->CompactRange(CompactRangeOptions(), nullptr, nullptr);
     }
+  }
+
+  void Flush(ThreadState* thread) {
+    DB* db = SelectDB(thread);
+    db->Flush(FlushOptions());
   }
 
 #ifndef ROCKSDB_LITE
