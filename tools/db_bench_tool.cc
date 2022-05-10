@@ -60,6 +60,7 @@
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/stats_history.h"
 #include "rocksdb/table.h"
+#include "rocksdb/utilities/backup_engine.h"
 #include "rocksdb/utilities/object_registry.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_type.h"
@@ -161,6 +162,7 @@ IF_ROCKSDB_LITE("",
     "timeseries,"
     "getmergeoperands",
     "readrandomoperands,"
+    "backup,"
 
     "Comma-separated list of operations to run in the specified"
     " order. Available benchmarks:\n"
@@ -250,7 +252,8 @@ IF_ROCKSDB_LITE("",
     "\treadrandomoperands -- read random keys using `GetMergeOperands()`. An "
     "operation includes a rare but possible retry in case it got "
     "`Status::Incomplete()`. This happens upon encountering more keys than "
-    "have ever been seen by the thread (or eight initially)\n");
+    "have ever been seen by the thread (or eight initially)\n"
+    "\tbackup    -- XXXXX\n");
 
 DEFINE_int64(num, 1000000, "Number of key/values to place in database");
 
@@ -1133,6 +1136,8 @@ DEFINE_bool(reserve_table_reader_memory, false,
             "A dynamically updating charge to block cache, loosely based on "
             "the actual memory usage of table reader, will occur to account "
             "the memory, if block cache available.");
+
+DEFINE_uint64(backup_rate_limit, 0ull, "XXX");
 
 static enum ROCKSDB_NAMESPACE::CompressionType StringToCompressionType(
     const char* ctype) {
@@ -3494,6 +3499,8 @@ class Benchmark {
       } else if (name == "readrandomoperands") {
         read_operands_ = true;
         method = &Benchmark::ReadRandom;
+      } else if (name == "backup") {
+        method = &Benchmark::Backup;
       } else if (!name.empty()) {  // No error message for empty name
         fprintf(stderr, "unknown benchmark '%s'\n", name.c_str());
         ErrorExit();
@@ -8185,6 +8192,17 @@ class Benchmark {
     }
   }
 
+  void Backup(ThreadState* thread) {
+    DB* db = SelectDB(thread);
+    std::string backup_dir = FLAGS_db + "/backups";
+    std::unique_ptr<BackupEngineOptions> engine_options_(
+        new BackupEngineOptions(backup_dir));
+    Status s;
+    BackupEngine* backup_engine;
+    engine_options_->backup_rate_limit = FLAGS_backup_rate_limit;
+    s = BackupEngine::Open(FLAGS_env, *engine_options_, &backup_engine);
+    s = backup_engine->CreateNewBackup(db);
+  }
 #endif  // ROCKSDB_LITE
 };
 
