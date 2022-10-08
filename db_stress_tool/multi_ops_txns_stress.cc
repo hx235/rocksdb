@@ -449,9 +449,11 @@ void MultiOpsTxnsStressTest::TestIngestExternalFile(
   (void)rand_column_families;
 }
 
-void MultiOpsTxnsStressTest::TestCompactRange(
-    ThreadState* thread, int64_t /*rand_key*/, const Slice& /*start_key*/,
-    ColumnFamilyHandle* column_family) {
+void MultiOpsTxnsStressTest::TestCompactRange(ThreadState* thread,
+                                              int64_t /*rand_key*/,
+                                              const Slice& /*start_key*/,
+                                              ColumnFamilyHandle* column_family,
+                                              const bool /* should_verify */) {
   // TODO (yanqin).
   // May use GetRangeHash() for validation before and after DB::CompactRange()
   // completes.

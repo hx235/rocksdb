@@ -861,7 +861,13 @@ void StressTest::OperateDb(ThreadState* thread) {
       Slice key = keystr;
 
       if (thread->rand.OneInOpt(FLAGS_compact_range_one_in)) {
-        TestCompactRange(thread, rand_key, key, column_family);
+        // FIFO can drop data without honoring any snapshot used in
+        // TestCompactRange's verification therefore we shouldn't verify in this
+        // case.
+        bool should_verify =
+            (options_.compaction_style !=
+             ROCKSDB_NAMESPACE::CompactionStyle::kCompactionStyleFIFO);
+        TestCompactRange(thread, rand_key, key, column_family, should_verify);
         if (thread->shared->HasVerificationFailedYet()) {
           break;
         }
@@ -1048,7 +1054,12 @@ void StressTest::OperateDb(ThreadState* thread) {
                        FLAGS_ops_per_thread - i - 1));
           rand_keys = GenerateNKeys(thread, num_seeks, i);
           i += num_seeks - 1;
-          TestIterate(thread, read_opts, rand_column_families, rand_keys);
+          // FIFO can drop data without honoring any snapshot used in
+          // TestIterate therefore incompatible with TestIterate
+          if (options_.compaction_style !=
+              ROCKSDB_NAMESPACE::CompactionStyle::kCompactionStyleFIFO) {
+            TestIterate(thread, read_opts, rand_column_families, rand_keys);
+          }
         }
       } else {
         assert(iterate_bound <= prob_op);
@@ -2214,7 +2225,8 @@ Status StressTest::MaybeReleaseSnapshots(ThreadState* thread, uint64_t i) {
 
 void StressTest::TestCompactRange(ThreadState* thread, int64_t rand_key,
                                   const Slice& start_key,
-                                  ColumnFamilyHandle* column_family) {
+                                  ColumnFamilyHandle* column_family,
+                                  const bool should_verify) {
   int64_t end_key_num;
   if (std::numeric_limits<int64_t>::max() - rand_key <
       FLAGS_compact_range_width) {
@@ -2250,7 +2262,7 @@ void StressTest::TestCompactRange(ThreadState* thread, int64_t rand_key,
 
   const Snapshot* pre_snapshot = nullptr;
   uint32_t pre_hash = 0;
-  if (thread->rand.OneIn(2)) {
+  if (should_verify && thread->rand.OneIn(2)) {
     // Do some validation by declaring a snapshot and compare the data before
     // and after the compaction
     pre_snapshot = db_->GetSnapshot();
@@ -3091,6 +3103,12 @@ void InitializeOptionsFromFlags(
   options.max_background_flushes = FLAGS_max_background_flushes;
   options.compaction_style =
       static_cast<ROCKSDB_NAMESPACE::CompactionStyle>(FLAGS_compaction_style);
+  if (options.compaction_style ==
+      ROCKSDB_NAMESPACE::CompactionStyle::kCompactionStyleFIFO) {
+    options.compaction_options_fifo.max_table_files_size =
+        FLAGS_fifo_max_table_files_size;
+    options.compaction_options_fifo.age_for_warm = FLAGS_fifo_age_for_warm;
+  }
   options.compaction_pri =
       static_cast<ROCKSDB_NAMESPACE::CompactionPri>(FLAGS_compaction_pri);
   options.num_levels = FLAGS_num_levels;

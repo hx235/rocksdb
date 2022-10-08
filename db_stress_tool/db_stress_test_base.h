@@ -123,7 +123,8 @@ class StressTest {
   // is rand_key.
   virtual void TestCompactRange(ThreadState* thread, int64_t rand_key,
                                 const Slice& start_key,
-                                ColumnFamilyHandle* column_family);
+                                ColumnFamilyHandle* column_family,
+                                const bool should_verify = true);
 
   // Calculate a hash value for all keys in range [start_key, end_key]
   // at a certain snapshot.

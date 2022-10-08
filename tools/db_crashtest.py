@@ -140,6 +140,8 @@ default_params = {
     # 0 = never (used by some), 10 = often (for threading bugs), 600 = default
     "stats_dump_period_sec": lambda: random.choice([0, 10, 600]),
     "compaction_ttl": lambda: random.choice([0, 0, 1, 2, 10, 100, 1000]),
+    "fifo_max_table_files_size": lambda: random.choice([256 * 1024, 256 * 1024 * 1024, 1 * 1024 * 1024 * 1024]),
+    "fifo_age_for_warm": lambda: random.choice([0, 1, 100, 1000]),
     # Test small max_manifest_file_size in a smaller chance, as most of the
     # time we wnat manifest history to be preserved to help debug
     "max_manifest_file_size": lambda: random.choice(

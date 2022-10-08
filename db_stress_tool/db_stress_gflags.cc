@@ -379,6 +379,16 @@ DEFINE_uint64(compaction_ttl, 1000,
 DEFINE_bool(allow_concurrent_memtable_write, false,
             "Allow multi-writers to update mem tables in parallel.");
 
+DEFINE_uint64(
+    fifo_max_table_files_size,
+    ROCKSDB_NAMESPACE::Options().compaction_options_fifo.max_table_files_size,
+    "Options for `Options().compaction_options_fifo.max_table_files_size`. It "
+    "only take effect when FIFO compaction is used.");
+
+DEFINE_uint64(fifo_age_for_warm, 0,
+              "Options for `Options().compaction_options_fifo.age_for_warm`. "
+              "It only take effect when FIFO compaction is used.");
+
 DEFINE_double(experimental_mempurge_threshold, 0.0,
               "Maximum estimated useful payload that triggers a "
               "mempurge process to collect memtable garbage bytes.");
