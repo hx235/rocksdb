@@ -1599,6 +1599,104 @@ TEST_F(DBWALTest, RaceInstallFlushResultsWithWalObsoletion) {
   delete db1;
 }
 
+TEST_F(DBWALTest, SyncWalOnObseletedWalWithManifestSplitCausingMissingWAL) {
+  Options options = CurrentOptions();
+  options.track_and_verify_wals_in_manifest = true;
+  // Set a small max_manifest_file_size to force manifest creation
+  // in SyncWAL() for tet purpose
+  options.max_manifest_file_size = 170;
+  DestroyAndReopen(options);
+
+  // Accumulate memtable m1 and create the 1st wal (i.e, 4.log)
+  ASSERT_OK(Put(Key(1), ""));
+  ASSERT_OK(Put(Key(2), ""));
+  ASSERT_OK(Put(Key(3), ""));
+
+  // fo.wait = false to simulate background flush concurrent with
+  // main thread, which is needed for coercing race condition in this test
+  FlushOptions fo;
+  fo.wait = false;
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->LoadDependency(
+      {{"MemTableList::TryInstallMemtableFlushResults::"
+        "PostWALDeletionDeleteWaslBefore",
+        "MemTableList::TryInstallMemtableFlushResults::LogAndApply"},
+       {"MemTableList::TryInstallMemtableFlushResults::LogAndApply",
+        "FindObsoleteFiles::PostMutexUnlock"},
+       {"FindObsoleteFiles::PostMutexUnlock", "Test::PreSyncWAL()"},
+       {"Test::PostSyncWAL()", "FindObsoleteFiles::PreLogWriteMutexLock"}});
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  db_->Flush(fo);
+
+  // Because we are calling SyncWAL() with the above sync point dependency,
+  // we are forcing the following sequence of events:
+  //
+  // (1) BackgroundFlush
+  // TEST_SYNC_POINT("MemTableList::TryInstallMemtableFlushResults::PostWALDeletionDeleteWaslBefore")
+  //
+  // (2) BackgroundFlush
+  // TEST_SYNC_POINT("MemTableList::TryInstallMemtableFlushResults::LogAndApply")
+  // BackgroundFlush records wal deletion
+  // of 4.log in manifest 1 (i.e, MANIFEST-000005)
+  // - This is because the memtable associated with it is flushed and new wal is
+  // created (i.e, 8.log)
+  //
+  // (3) BackgroundFlush obsoleted 4.log by adding
+  // it to `job_context->log_delete_files` because 4.log < 8.log for
+  // `PurgeObsoleteFiles()` to delete at a later stage of this
+  // BackgroundFlush(). Then it pauses at
+  // TEST_SYNC_POINT("FindObsoleteFiles::PreLogWriteMutexLock") and `db_mutex`
+  // has been unlocked from FindObsoleteFiles
+  //
+  // (4) TEST_SYNC_POINT("Test::PreSyncWAL()");
+  //
+  // (5) db_->SyncWAL() grabs `db_mutex` and do the following
+  // (5.1) Sync all WALS up to current WAL (i.e, 4.log,  8.log)
+  // (5.2) Create a new manifest (i.e, MANIFEST-000010)
+  // through new_descriptor_log sets to true due to a small
+  // `options.max_manifest_file_size = 170`
+  // (5.3) Record wal addion of the synced wal 4.log in this
+  // new manifest (i.e, MANIFEST-000010)
+  // - Noted that the wal additon of 4.log is the first entry in MANIFEST-000010
+  // (5.4) Make CURRENT file point to MANIFEST-000010
+  //
+  // (6) TEST_SYNC_POINT("Test::PostSyncWAL()");
+  //
+  // (7) TEST_SYNC_POINT("FindObsoleteFiles::PreLogWriteMutexLock");
+  //  - (7) has to happen after (5) cuz otherwise 4.log will be popped off the
+  //  log list as part of `FindObsoleteFiles` and therefore won't be included in
+  //  the SyncWAL()
+  //
+  // (8) BackgroundFlush resumes
+  TEST_SYNC_POINT("Test::PreSyncWAL()");
+  ASSERT_OK(db_->SyncWAL());
+  TEST_SYNC_POINT("Test::PostSyncWAL()");
+
+  // Upon Flush() finishes, PurgeObsoleteFiles() is finished and the previously
+  // obsoleted 4.log is now deleted
+  dbfull()->TEST_WaitForFlushMemTable(nullptr);
+
+  // When we reopen the db, DB::Recovery() will refer to the manifest pointed by
+  // CURRENT which is MANIFEST-000010.
+  // The first entry of MANIFEST-000010 is wal
+  // additon of 4.log, which resulted in `VersionSet::wals_` contains 4.log when
+  // `track_and_verify_wals_in_manifest == true`.
+  // Furthermore, there isn't any
+  // entry in MANIFEST-000010 about obseleting 4.log that actually happened.
+  // This is because the record was in MANIFEST-000005.
+  // Therefore, as a consequence of above two reasons, `VersionSet::wals_`
+  // will contain record of 4.log.
+  // However, the physical 4.log is already deleted in the previous DB
+  // session.
+  // Therefore when doing WalSet::CheckWals() as part of the recovery,
+  // we are comparing VersionSet::wals_ containing 4.log with wal folder that
+  // does not have the physical 4.log.
+  // Therefore, we see missing WAL corruption.
+  Status s = TryReopen(options);
+  ASSERT_TRUE(s.IsCorruption());
+  ASSERT_EQ("Corruption: Missing WAL with log number: 4.", s.ToString());
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+}
+
 // Test scope:
 // - We expect to open data store under all circumstances
 // - We expect only data upto the point where the first error was encountered

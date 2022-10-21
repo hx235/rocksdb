@@ -560,6 +560,9 @@ Status MemTableList::TryInstallMemtableFlushResults(
         if (min_wal_number_to_keep >
             vset->GetWalSet().GetMinWalNumberToKeep()) {
           wal_deletion.DeleteWalsBefore(min_wal_number_to_keep);
+          TEST_SYNC_POINT(
+              "MemTableList::TryInstallMemtableFlushResults::"
+              "PostWALDeletionDeleteWaslBefore");
         }
         TEST_SYNC_POINT_CALLBACK(
             "MemTableList::TryInstallMemtableFlushResults:"
@@ -579,6 +582,9 @@ Status MemTableList::TryInstallMemtableFlushResults(
                               db_directory, /*new_descriptor_log=*/false,
                               /*column_family_options=*/nullptr,
                               manifest_write_cb);
+        TEST_SYNC_POINT(
+            "MemTableList::TryInstallMemtableFlushResults::"
+            "LogAndApply");
       } else {
         // If write_edit is false (e.g: successful mempurge),
         // then remove old memtables, wake up manifest write queue threads,
