@@ -5389,6 +5389,7 @@ Status VersionSet::LogAndApply(
   TEST_SYNC_POINT_CALLBACK("VersionSet::LogAndApply:BeforeWriterWaiting",
                            nullptr);
   while (!first_writer.done && &first_writer != manifest_writers_.front()) {
+    TEST_SYNC_POINT("VersionSet::LogAndApply:PreFirstWriterCVWait");
     first_writer.cv.Wait();
   }
   if (first_writer.done) {

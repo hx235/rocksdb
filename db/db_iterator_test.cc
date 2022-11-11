@@ -3196,6 +3196,123 @@ TEST_F(DBIteratorWithReadCallbackTest, ReadCallback) {
   delete iter;
 }
 
+TEST_F(DBIteratorTest, NextUserEntryTwoSameKeysOfSeqnoZero) {
+  Options options = CurrentOptions();
+  options.create_if_missing = true;
+  options.compaction_style = kCompactionStyleLevel;
+  options.compaction_pri = kMinOverlappingRatio;
+  options.disable_auto_compactions = true;
+  DestroyAndReopen(options);
+
+  // l5 (same key) + l6 (same key) -> compact range to l6 as s1 - seqno 0
+  ASSERT_OK(Put("a", "dontcare"));
+  ASSERT_OK(Put("samekey", "l5compact1"));
+  ASSERT_OK(Put("t", "dontcare"));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(5 /* level */);
+  ColumnFamilyMetaData cf_meta_data;
+  db_->GetColumnFamilyMetaData(&cf_meta_data);
+  ASSERT_EQ(cf_meta_data.levels[5].files.size(), 1);
+
+  ASSERT_OK(Put("samekey", "l6compact1"));
+  ASSERT_OK(Flush());
+  MoveFilesToLevel(6 /* level */);
+  ColumnFamilyMetaData cf_meta_data2;
+  db_->GetColumnFamilyMetaData(&cf_meta_data2);
+  ASSERT_EQ(cf_meta_data2.levels[6].files.size(), 1);
+
+  ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  ColumnFamilyMetaData cf_meta_data33;
+  db_->GetColumnFamilyMetaData(&cf_meta_data33);
+  ASSERT_EQ(cf_meta_data33.levels[6].files.size(), 1);
+
+  // Coerce following sequence of events:
+  // (1) Start file ingestion of s2, assign it output level L5, pause on
+  // TEST_SYNC_POINT("VersionSet::LogAndApply:WriteManifest") and release lock
+  // (2) CompactRange() checks level, decides to refits s1 from L6 to L3 and
+  // pause at TEST_SYNC_POINT("VersionSet::LogAndApply:PreFirstWriterCVWait")
+  // and release lock
+  // (3) (1) resumes, install versions and applies edits to
+  // manifest and completes
+  // (4) (2) resumes, installs verions and applies edits
+  // to manifest and completes
+  SyncPoint::GetInstance()->LoadDependency(
+      {{"Target::VersionSet::LogAndApply:WriteManifest", "PreCompactRange"}});
+  std::size_t count1 = 0;
+  SyncPoint::GetInstance()->SetCallBack(
+      "VersionSet::LogAndApply:WriteManifest", [&](void*) {
+        ++count1;
+        if (count1 == 2) {
+          SyncPoint::GetInstance()->LoadDependency(
+              {{"VersionSet::LogAndApply:PreFirstWriterCVWait",
+                "VersionSet::LogAndApply:WriteManifestDone"}});
+          TEST_SYNC_POINT("Target::VersionSet::LogAndApply:WriteManifest");
+        }
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  port::Thread t1([&] {
+    SstFileWriter sst_file_writer(EnvOptions(), options);
+    // Ingested file s2
+    std::string ingested_file = dbname_ + "/ingested_file.sst";
+    ASSERT_OK(sst_file_writer.Open(ingested_file));
+    ASSERT_OK(sst_file_writer.Put("a1", "dontcare"));
+    ASSERT_OK(sst_file_writer.Put("samekey", "ingest1"));
+    ASSERT_OK(sst_file_writer.Put("t1", "dontcare"));
+    ASSERT_OK(sst_file_writer.Finish());
+    ASSERT_OK(
+        db_->IngestExternalFile({ingested_file}, IngestExternalFileOptions()));
+  });
+
+  port::Thread t2([&] {
+    CompactRangeOptions cro;
+    cro.change_level = 1;
+    cro.target_level = 3;
+    TEST_SYNC_POINT("PreCompactRange");
+    std::string key1 = "a";
+    Slice key1_s(key1);
+    std::string key2 = "b";
+    Slice key2_s(key2);
+    // Compacted file s3
+    ASSERT_OK(dbfull()->CompactRange(cro, &key1_s, &key2_s));
+  });
+
+  t1.join();
+  t2.join();
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  // l5 (same key) -> compact to l6 - seqno = 0
+  ColumnFamilyMetaData cf_meta_data4;
+  db_->GetColumnFamilyMetaData(&cf_meta_data4);
+  ASSERT_EQ(cf_meta_data4.levels[3].files.size(), 1);
+  ASSERT_EQ(cf_meta_data4.levels[5].files.size(), 1);
+  std::vector<std::string> input_files;
+  for (const auto& file : cf_meta_data4.levels[5].files) {
+    input_files.push_back(file.name);
+  }
+  ASSERT_OK(db_->CompactFiles(CompactionOptions(), input_files, 6));
+
+  ColumnFamilyMetaData cf_meta_data5;
+  db_->GetColumnFamilyMetaData(&cf_meta_data5);
+  ASSERT_EQ(cf_meta_data5.levels[6].files.size(), 1);
+  ASSERT_EQ(cf_meta_data5.levels[5].files.size(), 0);
+  ASSERT_EQ(cf_meta_data5.levels[4].files.size(), 0);
+  ASSERT_EQ(cf_meta_data5.levels[3].files.size(), 1);
+
+  ReadOptions read_opts;
+  std::unique_ptr<Iterator> iter(db_->NewIterator(read_opts));
+  iter->SeekToFirst();
+
+  // Next() will fail with
+  // DBIter::FindNextUserEntryInternal(bool, const rocksdb::Slice*):
+  // Assertion `!skipping_saved_key || CompareKeyForSkip(ikey_.user_key,
+  // saved_key_.GetUserKey()) > 0' failed.
+  while (iter->Valid()) {
+    iter->Next();
+  }
+}
+
 TEST_F(DBIteratorTest, BackwardIterationOnInplaceUpdateMemtable) {
   Options options = CurrentOptions();
   options.create_if_missing = true;
