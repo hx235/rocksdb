@@ -6642,6 +6642,41 @@ INSTANTIATE_TEST_CASE_P(
                       BottommostLevelCompaction::kForce,
                       BottommostLevelCompaction::kForceOptimized));
 
+TEST_F(DBCompactionTest, Repro) {
+  Options options = CurrentOptions();
+  options.force_consistency_checks = true;
+  options.compression = kNoCompression;
+  options.compaction_style = CompactionStyle::kCompactionStyleLevel;
+  options.disable_auto_compactions = true;
+  options.avoid_flush_during_shutdown = true;
+
+  DestroyAndReopen(options);
+  ASSERT_OK(Put("key1", "v"));
+  ASSERT_OK(Put("key2", "v"));
+  ASSERT_OK(Flush());
+  ASSERT_EQ(1, NumTableFilesAtLevel(0));
+
+  ASSERT_OK(Put("key3", "v"));
+  ASSERT_OK(Put("key4", "v"));
+  ASSERT_OK(Flush());
+  ASSERT_EQ(2, NumTableFilesAtLevel(0));
+
+  Reopen(options);
+
+  ColumnFamilyMetaData cf_meta_data;
+  db_->GetColumnFamilyMetaData(&cf_meta_data);
+  assert(cf_meta_data.levels[0].files.size() == 2);
+  std::vector<std::string> input_files;
+  for (const auto& file : cf_meta_data.levels[0].files) {
+    input_files.push_back(file.name);
+  }
+  // Just a normal CompactFiles() which should pass.
+  // Prior to the fix, it will fail due to false
+  // positive caught by #PR 10777
+  Status s = db_->CompactFiles(CompactionOptions(), input_files, 0);
+  EXPECT_OK(s);
+}
+
 TEST_F(DBCompactionTest, UpdateLevelSubCompactionTest) {
   Options options = CurrentOptions();
   options.max_subcompactions = 10;

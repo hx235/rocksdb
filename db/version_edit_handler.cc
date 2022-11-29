@@ -462,6 +462,16 @@ void VersionEditHandler::CheckIterationResult(const log::Reader& reader,
     if (last_seq != kMaxSequenceNumber &&
         last_seq > version_set_->last_sequence_.load()) {
       version_set_->last_sequence_.store(last_seq);
+
+      for (auto* cfd : *(version_set_->GetColumnFamilySet())) {
+        if (cfd->IsDropped()) {
+          continue;
+        }
+        if (cfd->mem()->GetEarliestSequenceNumber() <
+            version_set_->LastSequence()) {
+          cfd->mem()->SetEarliestSequenceNumber(version_set_->LastSequence());
+        }
+      }
     }
     if (last_seq != kMaxSequenceNumber &&
         last_seq > version_set_->descriptor_last_sequence_) {
