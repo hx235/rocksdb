@@ -470,7 +470,7 @@ struct DBOptions {
 
   // If true, the database will be created if it is missing.
   // Default: false
-  bool create_if_missing = false;
+  bool create_if_missing = true;
 
   // If true, missing column families will be automatically created.
   // Default: false
@@ -625,7 +625,7 @@ struct DBOptions {
   // Default: 0
   //
   // Dynamically changeable through SetDBOptions() API.
-  uint64_t max_total_wal_size = 0;
+  uint64_t max_total_wal_size = 18446744073709551615ul;
 
   // If non-null, then we should collect metrics about database operations
   std::shared_ptr<Statistics> statistics = nullptr;
@@ -689,7 +689,7 @@ struct DBOptions {
   // Default: 6 hours
   //
   // Dynamically changeable through SetDBOptions() API.
-  uint64_t delete_obsolete_files_period_micros = 6ULL * 60 * 60 * 1000000;
+  uint64_t delete_obsolete_files_period_micros = 0;
 
   // Maximum number of concurrent background jobs (compactions and flushes).
   //
@@ -722,7 +722,7 @@ struct DBOptions {
   // Default: 1 (i.e. no subcompactions)
   //
   // Dynamically changeable through SetDBOptions() API.
-  uint32_t max_subcompactions = 1;
+  uint32_t max_subcompactions = 4;
 
   // DEPRECATED: RocksDB automatically decides this based on the
   // value of max_background_jobs. For backwards compatibility we will set
@@ -751,17 +751,17 @@ struct DBOptions {
   // be created.
   // If max_log_file_size == 0, all logs will be written to one
   // log file.
-  size_t max_log_file_size = 0;
+  size_t max_log_file_size = 1048576;
 
   // Time for the info log file to roll (in seconds).
   // If specified with non-zero value, log file will be rolled
   // if it has been active longer than `log_file_time_to_roll`.
   // Default: 0 (disabled)
-  size_t log_file_time_to_roll = 0;
+  size_t log_file_time_to_roll = 86400;
 
   // Maximal info log files to be kept.
   // Default: 1000
-  size_t keep_log_file_num = 1000;
+  size_t keep_log_file_num = 10;
 
   // Recycle log files.
   // If non-zero, we will reuse previously written log files for new
@@ -780,7 +780,7 @@ struct DBOptions {
   uint64_t max_manifest_file_size = 1024 * 1024 * 1024;
 
   // Number of shards used for table cache.
-  int table_cache_numshardbits = 6;
+  int table_cache_numshardbits = 4;
 
   // The following two fields affect how archived logs will be deleted.
   // 1. If both set to 0, logs will be deleted asap and will not get into
@@ -835,7 +835,7 @@ struct DBOptions {
 
   // Use O_DIRECT for writes in background flush and compactions.
   // Default: false
-  bool use_direct_io_for_flush_and_compaction = false;
+  bool use_direct_io_for_flush_and_compaction = true;
 
   // If false, fallocate() calls are bypassed, which disables file
   // preallocation. The file space preallocation is used to increase the file
@@ -856,7 +856,7 @@ struct DBOptions {
   // Default: 600 (10 min)
   //
   // Dynamically changeable through SetDBOptions() API.
-  unsigned int stats_dump_period_sec = 600;
+  unsigned int stats_dump_period_sec = 3600;
 
   // if not zero, dump rocksdb.stats to RocksDB every stats_persist_period_sec
   // Default: 600
@@ -1024,7 +1024,7 @@ struct DBOptions {
   // be tracked and available via GetThreadList() API.
   //
   // Default: false
-  bool enable_thread_tracking = false;
+  bool enable_thread_tracking = true;
 
   // The limited write rate to DB if soft_pending_compaction_bytes_limit or
   // level0_slowdown_writes_trigger is triggered, or we are writing to the
@@ -1042,7 +1042,7 @@ struct DBOptions {
   // Default: 0
   //
   // Dynamically changeable through SetDBOptions() API.
-  uint64_t delayed_write_rate = 0;
+  uint64_t delayed_write_rate = 2097152;
 
   // By default, a single write thread queue is maintained. The thread gets
   // to the head of the queue becomes write batch group leader and responsible
@@ -1149,7 +1149,8 @@ struct DBOptions {
 
   // Recovery mode to control the consistency while replaying WAL
   // Default: kPointInTimeRecovery
-  WALRecoveryMode wal_recovery_mode = WALRecoveryMode::kPointInTimeRecovery;
+  WALRecoveryMode wal_recovery_mode =
+      WALRecoveryMode::kTolerateCorruptedTailRecords;
 
   // if set to false then recovery will fail when a prepared
   // transaction is encountered in the WAL
@@ -1184,7 +1185,7 @@ struct DBOptions {
   // have logs to recover from.
   //
   // DEFAULT: false
-  bool avoid_flush_during_recovery = false;
+  bool avoid_flush_during_recovery = true;
 
   // By default RocksDB will flush all memtables on DB close if there are
   // unpersisted data (i.e. with WAL disabled) The flush can be skip to speedup
@@ -1240,7 +1241,7 @@ struct DBOptions {
   //
   // Currently, any WAL-enabled writes after atomic flush may be replayed
   // independently if the process crashes later and tries to recover.
-  bool atomic_flush = false;
+  bool atomic_flush = true;
 
   // If true, working thread may avoid doing unnecessary and long-latency
   // operation (such as deleting obsolete files directly or deleting memtable)
@@ -1275,7 +1276,8 @@ struct DBOptions {
   // thread-safe.
   //
   // Default: nullptr
-  std::shared_ptr<FileChecksumGenFactory> file_checksum_gen_factory = nullptr;
+  std::shared_ptr<FileChecksumGenFactory> file_checksum_gen_factory =
+      nullptr;  // abc
 
   // By default, RocksDB will attempt to detect any data losses or corruptions
   // in DB files and return an error to the user, either at DB::Open time or

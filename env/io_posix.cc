@@ -7,6 +7,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+#include <bits/stdint-uintn.h>
 #ifdef ROCKSDB_LIB_IO_POSIX
 #include "env/io_posix.h"
 
@@ -44,6 +45,9 @@
 #define F_LINUX_SPECIFIC_BASE 1024
 #define F_SET_RW_HINT (F_LINUX_SPECIFIC_BASE + 12)
 #endif
+#include <iostream>
+#include <sstream>
+#include <thread>  // std::thread, std::thread::id, std::this_thread::get_id
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -563,9 +567,19 @@ PosixRandomAccessFile::PosixRandomAccessFile(
 PosixRandomAccessFile::~PosixRandomAccessFile() { close(fd_); }
 
 IOStatus PosixRandomAccessFile::Read(uint64_t offset, size_t n,
-                                     const IOOptions& /*opts*/, Slice* result,
+                                     const IOOptions& /* opts */, Slice* result,
                                      char* scratch,
                                      IODebugContext* /*dbg*/) const {
+  // if (opts.rate_limiter_priority == Env::IO_TOTAL) {
+  //   std::thread::id id = std::this_thread::get_id();
+  //   std::ostringstream ss;
+  //   ss << id;
+  //   std::string idstr = ss.str();
+  //   uint64_t idlong = std::stoll(idstr);
+  //   std::cout << "Thread ID: " << id << std::endl;
+  //   std::cout << "Thread ID ull: " << idlong << std::endl;
+  //   std::cout << "Found you" << std::endl;
+  // }
   if (use_direct_io()) {
     assert(IsSectorAligned(offset, GetRequiredBufferAlignment()));
     assert(IsSectorAligned(n, GetRequiredBufferAlignment()));

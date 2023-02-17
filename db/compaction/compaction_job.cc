@@ -723,6 +723,7 @@ Status CompactionJob::Run() {
         // verification as user reads since the goal is to cache it here for
         // further user reads
         ReadOptions read_options;
+        // read_options.rate_limiter_priority = Env::IO_LOW;
         InternalIterator* iter = cfd->table_cache()->NewIterator(
             read_options, file_options_, cfd->internal_comparator(),
             files_output[file_idx]->meta, /*range_del_agg=*/nullptr,

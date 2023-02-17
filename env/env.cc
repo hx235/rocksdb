@@ -9,7 +9,10 @@
 
 #include "rocksdb/env.h"
 
+#include <iostream>
+#include <sstream>
 #include <thread>
+#include <thread>  // std::thread, std::thread::id, std::this_thread::get_id
 
 #include "env/composite_env_wrapper.h"
 #include "env/emulated_clock.h"
@@ -139,9 +142,19 @@ class LegacyRandomAccessFileWrapper : public FSRandomAccessFile {
       std::unique_ptr<RandomAccessFile>&& target)
       : target_(std::move(target)) {}
 
-  IOStatus Read(uint64_t offset, size_t n, const IOOptions& /*options*/,
+  IOStatus Read(uint64_t offset, size_t n, const IOOptions& options,
                 Slice* result, char* scratch,
                 IODebugContext* /*dbg*/) const override {
+    if (options.rate_limiter_priority == Env::IO_TOTAL) {
+      std::thread::id id = std::this_thread::get_id();
+      std::ostringstream ss;
+      ss << id;
+      std::string idstr = ss.str();
+      uint64_t idlong = std::stoll(idstr);
+      std::cout << "Thread ID: " << id << std::endl;
+      std::cout << "Thread ID ull: " << idlong << std::endl;
+      std::cout << "Found you" << std::endl;
+    }
     return status_to_io_status(target_->Read(offset, n, result, scratch));
   }
 

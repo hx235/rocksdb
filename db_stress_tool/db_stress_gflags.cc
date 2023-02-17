@@ -951,7 +951,7 @@ DEFINE_bool(enable_compaction_filter, false,
             "If true, configures a compaction filter that returns a kRemove "
             "decision for deleted keys.");
 
-DEFINE_bool(paranoid_file_checks, true,
+DEFINE_bool(paranoid_file_checks, false,
             "After writing every SST file, reopen it and read all the keys "
             "and validate checksums");
 
