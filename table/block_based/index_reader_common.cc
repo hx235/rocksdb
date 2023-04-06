@@ -44,7 +44,7 @@ Status BlockBasedTable::IndexReaderCommon::GetOrReadIndexBlock(
     index_block->SetUnownedValue(index_block_.GetValue());
     return Status::OK();
   }
-
+  // TODO: plumb IOActivity down
   ReadOptions read_options;
   read_options.rate_limiter_priority = rate_limiter_priority;
   if (no_io) {

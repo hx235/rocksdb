@@ -574,6 +574,7 @@ Status TableCache::GetTableProperties(
   }
 
   TypedHandle* table_handle = nullptr;
+  // TODO: plumb IOActivity down
   Status s = FindTable(ReadOptions(), file_options, internal_comparator,
                        file_meta, &table_handle, prefix_extractor, no_io);
   if (!s.ok()) {
@@ -619,6 +620,7 @@ size_t TableCache::GetMemoryUsageByTableReader(
   }
 
   TypedHandle* table_handle = nullptr;
+  // TODO: plumb IOActivity down
   Status s = FindTable(ReadOptions(), file_options, internal_comparator,
                        file_meta, &table_handle, prefix_extractor, true);
   if (!s.ok()) {
@@ -645,6 +647,7 @@ uint64_t TableCache::ApproximateOffsetOf(
   if (table_reader == nullptr) {
     const bool for_compaction = (caller == TableReaderCaller::kCompaction);
     Status s =
+        // TODO: plumb IOActivity down
         FindTable(ReadOptions(), file_options_, internal_comparator, file_meta,
                   &table_handle, prefix_extractor, false /* no_io */,
                   !for_compaction /* record_read_stats */);
@@ -673,6 +676,7 @@ uint64_t TableCache::ApproximateSize(
   if (table_reader == nullptr) {
     const bool for_compaction = (caller == TableReaderCaller::kCompaction);
     Status s =
+        // TODO: plumb IOActivity down
         FindTable(ReadOptions(), file_options_, internal_comparator, file_meta,
                   &table_handle, prefix_extractor, false /* no_io */,
                   !for_compaction /* record_read_stats */);

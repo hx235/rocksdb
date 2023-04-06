@@ -78,6 +78,7 @@ InternalIteratorBase<IndexValue>* PartitionIndexReader::NewIterator(
             index_has_first_key(), index_key_includes_seq(),
             index_value_is_full()));
   } else {
+    // TODO: plumb IOActivity down
     ReadOptions ro;
     ro.fill_cache = read_options.fill_cache;
     ro.deadline = read_options.deadline;

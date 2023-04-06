@@ -425,6 +425,7 @@ Status ReadTableProperties(RandomAccessFileReader* file, uint64_t file_size,
   }
 
   if (!block_handle.IsNull()) {
+    // TODO: plumb IOActivity down
     s = ReadTablePropertiesHelper(ReadOptions(), block_handle, file,
                                   prefetch_buffer, footer, ioptions, properties,
                                   memory_allocator);
@@ -489,6 +490,7 @@ Status ReadMetaIndexBlockInFile(RandomAccessFileReader* file,
   }
 
   auto metaindex_handle = footer.metaindex_handle();
+  // TODO: plumb IOActivity down
   return BlockFetcher(file, prefetch_buffer, footer, ReadOptions(),
                       metaindex_handle, metaindex_contents, ioptions,
                       false /* do decompression */, false /*maybe_compressed*/,
@@ -541,7 +543,7 @@ Status ReadMetaBlock(RandomAccessFileReader* file,
   if (!status.ok()) {
     return status;
   }
-
+  // TODO: plumb IOActivity down
   return BlockFetcher(file, prefetch_buffer, footer, ReadOptions(),
                       block_handle, contents, ioptions, false /* decompress */,
                       false /*maybe_compressed*/, block_type,

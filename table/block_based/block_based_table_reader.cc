@@ -2197,6 +2197,7 @@ Status BlockBasedTable::Prefetch(const Slice* const begin,
   }
   BlockCacheLookupContext lookup_context{TableReaderCaller::kPrefetch};
   IndexBlockIter iiter_on_stack;
+  // TODO: plumb IOActivity down
   auto iiter = NewIndexIterator(ReadOptions(), /*need_upper_bound_check=*/false,
                                 &iiter_on_stack, /*get_context=*/nullptr,
                                 &lookup_context);
@@ -2233,6 +2234,7 @@ Status BlockBasedTable::Prefetch(const Slice* const begin,
     // Load the block specified by the block_handle into the block cache
     DataBlockIter biter;
     Status tmp_status;
+    // TODO: plumb IOActivity down
     NewDataBlockIterator<DataBlockIter>(
         ReadOptions(), block_handle, &biter, /*type=*/BlockType::kData,
         /*get_context=*/nullptr, &lookup_context,
@@ -2254,6 +2256,7 @@ Status BlockBasedTable::VerifyChecksum(const ReadOptions& read_options,
   // Check Meta blocks
   std::unique_ptr<Block> metaindex;
   std::unique_ptr<InternalIterator> metaindex_iter;
+  // TODO: plumb IOActivity down
   ReadOptions ro;
   s = ReadMetaIndexBlock(ro, nullptr /* prefetch buffer */, &metaindex,
                          &metaindex_iter);
@@ -2381,11 +2384,13 @@ Status BlockBasedTable::VerifyChecksumInMetaBlocks(
       // Unfortunate special handling for properties block checksum w/
       // global seqno
       std::unique_ptr<TableProperties> table_properties;
+      // TODO: plumb IOActivity down
       s = ReadTablePropertiesHelper(ReadOptions(), handle, rep_->file.get(),
                                     nullptr /* prefetch_buffer */, rep_->footer,
                                     rep_->ioptions, &table_properties,
                                     nullptr /* memory_allocator */);
     } else {
+      // TODO: plumb IOActivity down
       s = BlockFetcher(
               rep_->file.get(), nullptr /* prefetch buffer */, rep_->footer,
               ReadOptions(), handle, &contents, rep_->ioptions,
@@ -2512,6 +2517,7 @@ uint64_t BlockBasedTable::ApproximateOffsetOf(const Slice& key,
 
   BlockCacheLookupContext context(caller);
   IndexBlockIter iiter_on_stack;
+  // TODO: plumb IOActivity down
   ReadOptions ro;
   ro.total_order_seek = true;
   auto index_iter =
@@ -2557,6 +2563,7 @@ uint64_t BlockBasedTable::ApproximateSize(const Slice& start, const Slice& end,
 
   BlockCacheLookupContext context(caller);
   IndexBlockIter iiter_on_stack;
+  // TODO: plumb IOActivity down
   ReadOptions ro;
   ro.total_order_seek = true;
   auto index_iter =
@@ -2611,6 +2618,7 @@ bool BlockBasedTable::TEST_IndexBlockInCache() const {
 
 Status BlockBasedTable::GetKVPairsFromDataBlocks(
     std::vector<KVPairBlock>* kv_pair_blocks) {
+  // TODO: plumb IOActivity down
   std::unique_ptr<InternalIteratorBase<IndexValue>> blockhandles_iter(
       NewIndexIterator(ReadOptions(), /*need_upper_bound_check=*/false,
                        /*input_iter=*/nullptr, /*get_context=*/nullptr,
@@ -2632,6 +2640,7 @@ Status BlockBasedTable::GetKVPairsFromDataBlocks(
 
     std::unique_ptr<InternalIterator> datablock_iter;
     Status tmp_status;
+    // TODO: plumb IOActivity down
     datablock_iter.reset(NewDataBlockIterator<DataBlockIter>(
         ReadOptions(), blockhandles_iter->value().handle,
         /*input_iter=*/nullptr, /*type=*/BlockType::kData,
@@ -2679,6 +2688,7 @@ Status BlockBasedTable::DumpTable(WritableFile* out_file) {
                 "--------------------------------------\n";
   std::unique_ptr<Block> metaindex;
   std::unique_ptr<InternalIterator> metaindex_iter;
+  // TODO: plumb IOActivity down
   ReadOptions ro;
   Status s = ReadMetaIndexBlock(ro, nullptr /* prefetch_buffer */, &metaindex,
                                 &metaindex_iter);

@@ -86,7 +86,7 @@ Status UncompressionDictReader::GetOrReadUncompressionDictionary(
     uncompression_dict->SetUnownedValue(uncompression_dict_.GetValue());
     return Status::OK();
   }
-
+  // TODO: plumb IOActivity down
   ReadOptions read_options;
   if (no_io) {
     read_options.read_tier = kBlockCacheTier;

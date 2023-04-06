@@ -422,6 +422,7 @@ class Repairer {
 
       FileMetaData meta;
       meta.fd = FileDescriptor(next_file_number_++, 0, 0);
+      // TODO: plumb IOActivity down
       ReadOptions ro;
       ro.total_order_seek = true;
       Arena arena;
@@ -556,6 +557,7 @@ class Repairer {
       }
     }
     if (status.ok()) {
+      // TODO: plumb IOActivity down
       ReadOptions ropts;
       ropts.total_order_seek = true;
       InternalIterator* iter = table_cache_->NewIterator(
@@ -603,6 +605,7 @@ class Repairer {
       // an SST file is a full sorted run. This probably needs the extra logic
       // from compaction_job.cc around call to UpdateBoundariesForRange (to
       // handle range tombstones extendingg beyond range of other entries).
+      // TODO: plumb IOActivity down
       ReadOptions ropts;
       std::unique_ptr<FragmentedRangeTombstoneIterator> r_iter;
       status = table_cache_->GetRangeTombstoneIterator(
@@ -809,4 +812,3 @@ Status RepairDB(const std::string& dbname, const Options& options) {
 }
 
 }  // namespace ROCKSDB_NAMESPACE
-

@@ -379,6 +379,7 @@ Status FlushJob::MemPurge() {
   // Create two iterators, one for the memtable data (contains
   // info from puts + deletes), and one for the memtable
   // Range Tombstones (from DeleteRanges).
+  // TODO: plumb IOActivity down
   ReadOptions ro;
   ro.total_order_seek = true;
   Arena arena;
@@ -670,6 +671,7 @@ bool FlushJob::MemPurgeDecider(double threshold) {
   // 95% confidence interval, 7% precision.
   //    n0 = (1.96*1.96)*0.25/(0.07*0.07) = 196.0
   double n0 = 196.0;
+  // TODO: plumb IOActivity down
   ReadOptions ro;
   ro.total_order_seek = true;
 

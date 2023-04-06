@@ -1410,6 +1410,7 @@ std::unique_ptr<BlobFetcher> CompactionIterator::CreateBlobFetcherIfNeeded(
     return nullptr;
   }
 
+  // TODO: plumb IOActivity down
   ReadOptions read_options;
   read_options.fill_cache = false;
 

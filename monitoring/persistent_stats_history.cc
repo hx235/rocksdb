@@ -41,6 +41,7 @@ Status DecodePersistentStatsVersionNumber(DBImpl* db, StatsVersionKeyType type,
   } else if (type == StatsVersionKeyType::kCompatibleVersion) {
     key = kCompatibleVersionKeyString;
   }
+  // TODO: plumb IOActivity down
   ReadOptions options;
   options.verify_checksums = true;
   std::string result;
@@ -122,6 +123,7 @@ void PersistentStatsHistoryIterator::AdvanceIteratorByTime(uint64_t start_time,
                                                            uint64_t end_time) {
   // try to find next entry in stats_history_ map
   if (db_impl_ != nullptr) {
+    // TODO: plumb IOActivity down
     ReadOptions ro;
     Iterator* iter =
         db_impl_->NewIterator(ro, db_impl_->PersistentStatsColumnFamily());

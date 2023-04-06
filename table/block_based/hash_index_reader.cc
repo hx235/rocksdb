@@ -73,6 +73,7 @@ Status HashIndexReader::Create(const BlockBasedTable* table,
 
   // Read contents for the blocks
   BlockContents prefixes_contents;
+  // TODO: plumb IOActivity down
   BlockFetcher prefixes_block_fetcher(
       file, prefetch_buffer, footer, ReadOptions(), prefixes_handle,
       &prefixes_contents, ioptions, true /*decompress*/,
@@ -83,6 +84,7 @@ Status HashIndexReader::Create(const BlockBasedTable* table,
     return s;
   }
   BlockContents prefixes_meta_contents;
+  // TODO: plumb IOActivity down
   BlockFetcher prefixes_meta_block_fetcher(
       file, prefetch_buffer, footer, ReadOptions(), prefixes_meta_handle,
       &prefixes_meta_contents, ioptions, true /*decompress*/,

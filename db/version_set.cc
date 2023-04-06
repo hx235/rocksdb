@@ -1612,7 +1612,7 @@ Status Version::TablesRangeTombstoneSummary(int max_entries_to_print,
 
       TableCache* table_cache = cfd_->table_cache();
       std::unique_ptr<FragmentedRangeTombstoneIterator> tombstone_iter;
-
+      // TODO: plumb IOActivity down
       Status s = table_cache->GetRangeTombstoneIterator(
           ReadOptions(), cfd_->internal_comparator(), *file_meta,
           &tombstone_iter);
@@ -6928,6 +6928,7 @@ Status VersionSet::VerifyFileMetadata(ColumnFamilyData* cfd,
 
     TableCache::TypedHandle* handle = nullptr;
     FileMetaData meta_copy = meta;
+    // TODO: plumb IOActivity down
     status = table_cache->FindTable(
         ReadOptions(), file_opts, *icmp, meta_copy, &handle, pe,
         /*no_io=*/false, /*record_read_stats=*/true,

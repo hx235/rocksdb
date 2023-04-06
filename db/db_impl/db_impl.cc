@@ -5034,6 +5034,7 @@ Status DBImpl::GetLatestSequenceForKey(
   MergeContext merge_context;
   SequenceNumber max_covering_tombstone_seq = 0;
 
+  // TODO: plumb IOActivity down
   ReadOptions read_options;
   SequenceNumber current_seq = versions_->LastSequence();
 
