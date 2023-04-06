@@ -51,12 +51,12 @@ class WritePreparedTxn : public PessimisticTransaction {
   // seq in the WAL that is also published, LastPublishedSequence, as opposed to
   // the last seq in the memtable.
   using Transaction::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override;
 
   using Transaction::MultiGet;
-  virtual void MultiGet(const ReadOptions& options,
+  virtual void MultiGet(const ReaPublicdOptions& options,
                         ColumnFamilyHandle* column_family,
                         const size_t num_keys, const Slice* keys,
                         PinnableSlice* values, Status* statuses,
@@ -68,8 +68,8 @@ class WritePreparedTxn : public PessimisticTransaction {
   // based on the last seq in the WAL that is also published,
   // LastPublishedSequence, as opposed to the last seq in the memtable.
   using Transaction::GetIterator;
-  virtual Iterator* GetIterator(const ReadOptions& options) override;
-  virtual Iterator* GetIterator(const ReadOptions& options,
+  virtual Iterator* GetIterator(const ReadPublicOptions& options) override;
+  virtual Iterator* GetIterator(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family) override;
 
   virtual void SetSnapshot() override;
@@ -114,4 +114,3 @@ class WritePreparedTxn : public PessimisticTransaction {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-

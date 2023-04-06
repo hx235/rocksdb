@@ -109,7 +109,7 @@ class Iterator : public Cleanable {
 
   // If supported, renew the iterator to represent the latest state. The
   // iterator will be invalidated after the call. Not supported if
-  // ReadOptions.snapshot is given when creating the iterator.
+  // ReadPublicOptions.snapshot is given when creating the iterator.
   virtual Status Refresh() {
     return Status::NotSupported("Refresh() is not supported");
   }
@@ -118,7 +118,7 @@ class Iterator : public Cleanable {
   //   If returning "1", this means that the Slice returned by key() is valid
   //   as long as the iterator is not deleted.
   //   It is guaranteed to always return "1" if
-  //      - Iterator created with ReadOptions::pin_data = true
+  //      - Iterator created with ReadPublicOptions::pin_data = true
   //      - DB tables were created with
   //        BlockBasedTableOptions::use_delta_encoding = false.
   // Property "rocksdb.iterator.super-version-number":

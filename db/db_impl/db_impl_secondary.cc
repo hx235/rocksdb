@@ -328,14 +328,14 @@ Status DBImplSecondary::RecoverLogFiles(
 }
 
 // Implementation of the DB interface
-Status DBImplSecondary::Get(const ReadOptions& read_options,
+Status DBImplSecondary::Get(const ReadPublicOptions& read_options,
                             ColumnFamilyHandle* column_family, const Slice& key,
                             PinnableSlice* value) {
   return GetImpl(read_options, column_family, key, value,
                  /*timestamp*/ nullptr);
 }
 
-Status DBImplSecondary::Get(const ReadOptions& read_options,
+Status DBImplSecondary::Get(const ReadPublicOptions& read_options,
                             ColumnFamilyHandle* column_family, const Slice& key,
                             PinnableSlice* value, std::string* timestamp) {
   return GetImpl(read_options, column_family, key, value, timestamp);
@@ -435,7 +435,7 @@ Status DBImplSecondary::GetImpl(const ReadOptions& read_options,
   return s;
 }
 
-Iterator* DBImplSecondary::NewIterator(const ReadOptions& read_options,
+Iterator* DBImplSecondary::NewIterator(const ReadPublicOptions& read_options,
                                        ColumnFamilyHandle* column_family) {
   if (read_options.managed) {
     return NewErrorIterator(
@@ -501,7 +501,7 @@ ArenaWrappedDBIter* DBImplSecondary::NewIteratorImpl(
 }
 
 Status DBImplSecondary::NewIterators(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_families,
     std::vector<Iterator*>* iterators) {
   if (read_options.managed) {

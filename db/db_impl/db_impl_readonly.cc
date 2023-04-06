@@ -29,14 +29,14 @@ DBImplReadOnly::DBImplReadOnly(const DBOptions& db_options,
 DBImplReadOnly::~DBImplReadOnly() {}
 
 // Implementations of the DB interface
-Status DBImplReadOnly::Get(const ReadOptions& read_options,
+Status DBImplReadOnly::Get(const ReadPublicOptions& read_options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            PinnableSlice* pinnable_val) {
   return Get(read_options, column_family, key, pinnable_val,
              /*timestamp*/ nullptr);
 }
 
-Status DBImplReadOnly::Get(const ReadOptions& read_options,
+Status DBImplReadOnly::Get(const ReadPublicOptions& read_options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            PinnableSlice* pinnable_val,
                            std::string* timestamp) {
@@ -110,7 +110,7 @@ Status DBImplReadOnly::Get(const ReadOptions& read_options,
   return s;
 }
 
-Iterator* DBImplReadOnly::NewIterator(const ReadOptions& read_options,
+Iterator* DBImplReadOnly::NewIterator(const ReadPublicOptions& read_options,
                                       ColumnFamilyHandle* column_family) {
   assert(column_family);
   if (read_options.timestamp) {
@@ -148,7 +148,7 @@ Iterator* DBImplReadOnly::NewIterator(const ReadOptions& read_options,
 }
 
 Status DBImplReadOnly::NewIterators(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_families,
     std::vector<Iterator*>* iterators) {
   if (read_options.timestamp) {

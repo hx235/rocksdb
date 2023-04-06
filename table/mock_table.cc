@@ -235,7 +235,7 @@ MockTableFactory::MockTableFactory()
     : next_id_(1), corrupt_mode_(MockTableFactory::kCorruptNone) {}
 
 Status MockTableFactory::NewTableReader(
-    const ReadOptions& /*ro*/,
+    const ReadPublicOptions& /*ro*/,
     const TableReaderOptions& /*table_reader_options*/,
     std::unique_ptr<RandomAccessFileReader>&& file, uint64_t /*file_size*/,
     std::unique_ptr<TableReader>* table_reader,

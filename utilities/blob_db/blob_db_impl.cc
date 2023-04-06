@@ -1384,7 +1384,7 @@ Status BlobDBImpl::AppendBlob(const std::shared_ptr<BlobFile>& bfile,
   return s;
 }
 
-std::vector<Status> BlobDBImpl::MultiGet(const ReadOptions& read_options,
+std::vector<Status> BlobDBImpl::MultiGet(const ReadPublicOptions& read_options,
                                          const std::vector<Slice>& keys,
                                          std::vector<std::string>* values) {
   StopWatch multiget_sw(clock_, statistics_, BLOB_DB_MULTIGET_MICROS);
@@ -1609,14 +1609,14 @@ Status BlobDBImpl::GetRawBlobFromFile(const Slice& key, uint64_t file_number,
   return Status::OK();
 }
 
-Status BlobDBImpl::Get(const ReadOptions& read_options,
+Status BlobDBImpl::Get(const ReadPublicOptions& read_options,
                        ColumnFamilyHandle* column_family, const Slice& key,
                        PinnableSlice* value) {
   return Get(read_options, column_family, key, value,
              static_cast<uint64_t*>(nullptr) /*expiration*/);
 }
 
-Status BlobDBImpl::Get(const ReadOptions& read_options,
+Status BlobDBImpl::Get(const ReadPublicOptions& read_options,
                        ColumnFamilyHandle* column_family, const Slice& key,
                        PinnableSlice* value, uint64_t* expiration) {
   StopWatch get_sw(clock_, statistics_, BLOB_DB_GET_MICROS);
@@ -2035,7 +2035,7 @@ void BlobDBImpl::CopyBlobFiles(
   }
 }
 
-Iterator* BlobDBImpl::NewIterator(const ReadOptions& read_options) {
+Iterator* BlobDBImpl::NewIterator(const ReadPublicOptions& read_options) {
   auto* cfd =
       static_cast_with_check<ColumnFamilyHandleImpl>(DefaultColumnFamily())
           ->cfd();

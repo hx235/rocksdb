@@ -536,7 +536,7 @@ extern ROCKSDB_LIBRARY_API void rocksdb_multi_get_cf_with_ts(
 //
 // Parameters -
 // db - the RocksDB instance.
-// options - ReadOptions
+// options - ReadPublicOptions
 // column_family - ColumnFamilyHandle* that the keys belong to. All the keys
 //                 passed to the API are restricted to a single column family
 // num_keys - Number of keys to lookup

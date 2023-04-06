@@ -231,20 +231,20 @@ class DBImpl : public DB {
                        WriteBatch* updates) override;
 
   using DB::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value, std::string* timestamp) override;
 
   using DB::GetEntity;
-  Status GetEntity(const ReadOptions& options,
+  Status GetEntity(const ReadPublicOptions& options,
                    ColumnFamilyHandle* column_family, const Slice& key,
                    PinnableWideColumns* columns) override;
 
   using DB::GetMergeOperands;
-  Status GetMergeOperands(const ReadOptions& options,
+  Status GetMergeOperands(const ReadPublicOptions& options,
                           ColumnFamilyHandle* column_family, const Slice& key,
                           PinnableSlice* merge_operands,
                           GetMergeOperandsOptions* get_merge_operands_options,
@@ -277,19 +277,19 @@ class DBImpl : public DB {
   // The values and statuses parameters are arrays with number of elements
   // equal to keys.size(). This allows the storage for those to be alloacted
   // by the caller on the stack for small batches
-  void MultiGet(const ReadOptions& options, ColumnFamilyHandle* column_family,
+  void MultiGet(const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
                 const size_t num_keys, const Slice* keys, PinnableSlice* values,
                 Status* statuses, const bool sorted_input = false) override;
-  void MultiGet(const ReadOptions& options, ColumnFamilyHandle* column_family,
+  void MultiGet(const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
                 const size_t num_keys, const Slice* keys, PinnableSlice* values,
                 std::string* timestamps, Status* statuses,
                 const bool sorted_input = false) override;
 
-  void MultiGet(const ReadOptions& options, const size_t num_keys,
+  void MultiGet(const ReadPublicOptions& options, const size_t num_keys,
                 ColumnFamilyHandle** column_families, const Slice* keys,
                 PinnableSlice* values, Status* statuses,
                 const bool sorted_input = false) override;
-  void MultiGet(const ReadOptions& options, const size_t num_keys,
+  void MultiGet(const ReadPublicOptions& options, const size_t num_keys,
                 ColumnFamilyHandle** column_families, const Slice* keys,
                 PinnableSlice* values, std::string* timestamps,
                 Status* statuses, const bool sorted_input = false) override;
@@ -301,12 +301,12 @@ class DBImpl : public DB {
 
   using DB::MultiGetEntity;
 
-  void MultiGetEntity(const ReadOptions& options,
+  void MultiGetEntity(const ReadPublicOptions& options,
                       ColumnFamilyHandle* column_family, size_t num_keys,
                       const Slice* keys, PinnableWideColumns* results,
                       Status* statuses, bool sorted_input) override;
 
-  void MultiGetEntity(const ReadOptions& options, size_t num_keys,
+  void MultiGetEntity(const ReadPublicOptions& options, size_t num_keys,
                       ColumnFamilyHandle** column_families, const Slice* keys,
                       PinnableWideColumns* results, Status* statuses,
                       bool sorted_input) override;
@@ -330,16 +330,16 @@ class DBImpl : public DB {
   // memory. On return, if value was found, then value_found will be set to true
   // , otherwise false.
   using DB::KeyMayExist;
-  virtual bool KeyMayExist(const ReadOptions& options,
+  virtual bool KeyMayExist(const ReadPublicOptions& options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            std::string* value, std::string* timestamp,
                            bool* value_found = nullptr) override;
 
   using DB::NewIterator;
-  virtual Iterator* NewIterator(const ReadOptions& options,
+  virtual Iterator* NewIterator(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family) override;
   virtual Status NewIterators(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families,
       std::vector<Iterator*>* iterators) override;
 
@@ -535,10 +535,10 @@ class DBImpl : public DB {
       ColumnFamilyHandle** handle) override;
 
   using DB::VerifyFileChecksums;
-  Status VerifyFileChecksums(const ReadOptions& read_options) override;
+  Status VerifyFileChecksums(const ReadPublicOptions& read_options) override;
 
   using DB::VerifyChecksum;
-  virtual Status VerifyChecksum(const ReadOptions& /*read_options*/) override;
+  virtual Status VerifyChecksum(const ReadPublicOptions& /*read_options*/) override;
   // Verify the checksums of files in db. Currently only tables are checked.
   //
   // read_options: controls file I/O behavior, e.g. read ahead size while

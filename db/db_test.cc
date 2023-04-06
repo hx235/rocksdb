@@ -3053,14 +3053,14 @@ class ModelDB : public DB {
     return Status::NotSupported();
   }
   using DB::Get;
-  Status Get(const ReadOptions& /*options*/, ColumnFamilyHandle* /*cf*/,
+  Status Get(const ReadPublicOptions& /*options*/, ColumnFamilyHandle* /*cf*/,
              const Slice& key, PinnableSlice* /*value*/) override {
     return Status::NotSupported(key);
   }
 
   using DB::GetMergeOperands;
   virtual Status GetMergeOperands(
-      const ReadOptions& /*options*/, ColumnFamilyHandle* /*column_family*/,
+      const ReadPublicOptions& /*options*/, ColumnFamilyHandle* /*column_family*/,
       const Slice& key, PinnableSlice* /*slice*/,
       GetMergeOperandsOptions* /*merge_operands_options*/,
       int* /*number_of_operands*/) override {
@@ -3121,7 +3121,7 @@ class ModelDB : public DB {
   }
 
   using DB::KeyMayExist;
-  bool KeyMayExist(const ReadOptions& /*options*/,
+  bool KeyMayExist(const ReadPublicOptions& /*options*/,
                    ColumnFamilyHandle* /*column_family*/, const Slice& /*key*/,
                    std::string* /*value*/,
                    bool* value_found = nullptr) override {
@@ -3131,7 +3131,7 @@ class ModelDB : public DB {
     return true;  // Not Supported directly
   }
   using DB::NewIterator;
-  Iterator* NewIterator(const ReadOptions& options,
+  Iterator* NewIterator(const ReadPublicOptions& options,
                         ColumnFamilyHandle* /*column_family*/) override {
     if (options.snapshot == nullptr) {
       KVMap* saved = new KVMap;
@@ -3143,7 +3143,7 @@ class ModelDB : public DB {
       return new ModelIter(snapshot_state, false);
     }
   }
-  Status NewIterators(const ReadOptions& /*options*/,
+  Status NewIterators(const ReadPublicOptions& /*options*/,
                       const std::vector<ColumnFamilyHandle*>& /*column_family*/,
                       std::vector<Iterator*>* /*iterators*/) override {
     return Status::NotSupported("Not supported yet");

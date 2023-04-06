@@ -26,11 +26,11 @@ class CompactedDBImpl : public DBImpl {
 
   // Implementations of the DB interface
   using DB::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override;
 
-  Status Get(const ReadOptions& options, ColumnFamilyHandle* column_family,
+  Status Get(const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
              const Slice& key, PinnableSlice* value,
              std::string* timestamp) override;
 

@@ -291,13 +291,13 @@ class Transaction {
   // DB but will NOT change which keys are read from this transaction (the keys
   // in this transaction do not yet belong to any snapshot and will be fetched
   // regardless).
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      std::string* value) = 0;
 
   // An overload of the above method that receives a PinnableSlice
   // For backward compatibility a default implementation is provided
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* pinnable_val) {
     assert(pinnable_val != nullptr);
@@ -306,9 +306,9 @@ class Transaction {
     return s;
   }
 
-  virtual Status Get(const ReadOptions& options, const Slice& key,
+  virtual Status Get(const ReadPublicOptions& options, const Slice& key,
                      std::string* value) = 0;
-  virtual Status Get(const ReadOptions& options, const Slice& key,
+  virtual Status Get(const ReadPublicOptions& options, const Slice& key,
                      PinnableSlice* pinnable_val) {
     assert(pinnable_val != nullptr);
     auto s = Get(options, key, pinnable_val->GetSelf());
@@ -317,18 +317,18 @@ class Transaction {
   }
 
   virtual std::vector<Status> MultiGet(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_family,
       const std::vector<Slice>& keys, std::vector<std::string>* values) = 0;
 
-  virtual std::vector<Status> MultiGet(const ReadOptions& options,
+  virtual std::vector<Status> MultiGet(const ReadPublicOptions& options,
                                        const std::vector<Slice>& keys,
                                        std::vector<std::string>* values) = 0;
 
   // Batched version of MultiGet - see DBImpl::MultiGet(). Sub-classes are
   // expected to override this with an implementation that calls
   // DBImpl::MultiGet()
-  virtual void MultiGet(const ReadOptions& options,
+  virtual void MultiGet(const ReadPublicOptions& options,
                         ColumnFamilyHandle* column_family,
                         const size_t num_keys, const Slice* keys,
                         PinnableSlice* values, Status* statuses,
@@ -342,7 +342,7 @@ class Transaction {
   // be able to be committed if this key is not written outside this
   // transaction after it has first been read (or after the snapshot if a
   // snapshot is set in this transaction and do_validate is true). If
-  // do_validate is false, ReadOptions::snapshot is expected to be nullptr so
+  // do_validate is false, ReadPublicOptions::snapshot is expected to be nullptr so
   // that GetForUpdate returns the latest committed value. The transaction
   // behavior is the same regardless of whether the key exists or not.
   //
@@ -366,7 +366,7 @@ class Transaction {
   //  (See max_write_buffer_size_to_maintain)
   // Status::MergeInProgress() if merge operations cannot be resolved.
   // or other errors if this key could not be read.
-  virtual Status GetForUpdate(const ReadOptions& options,
+  virtual Status GetForUpdate(const ReadPublicOptions& options,
                               ColumnFamilyHandle* column_family,
                               const Slice& key, std::string* value,
                               bool exclusive = true,
@@ -374,7 +374,7 @@ class Transaction {
 
   // An overload of the above method that receives a PinnableSlice
   // For backward compatibility a default implementation is provided
-  virtual Status GetForUpdate(const ReadOptions& options,
+  virtual Status GetForUpdate(const ReadPublicOptions& options,
                               ColumnFamilyHandle* column_family,
                               const Slice& key, PinnableSlice* pinnable_val,
                               bool exclusive = true,
@@ -397,17 +397,17 @@ class Transaction {
     return Status::NotSupported();
   }
 
-  virtual Status GetForUpdate(const ReadOptions& options, const Slice& key,
+  virtual Status GetForUpdate(const ReadPublicOptions& options, const Slice& key,
                               std::string* value, bool exclusive = true,
                               const bool do_validate = true) = 0;
 
   virtual std::vector<Status> MultiGetForUpdate(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_family,
       const std::vector<Slice>& keys, std::vector<std::string>* values) = 0;
 
   virtual std::vector<Status> MultiGetForUpdate(
-      const ReadOptions& options, const std::vector<Slice>& keys,
+      const ReadPublicOptions& options, const std::vector<Slice>& keys,
       std::vector<std::string>* values) = 0;
 
   // Returns an iterator that will iterate on all keys in the default
@@ -423,9 +423,9 @@ class Transaction {
   //
   // The returned iterator is only valid until Commit(), Rollback(), or
   // RollbackToSavePoint() is called.
-  virtual Iterator* GetIterator(const ReadOptions& read_options) = 0;
+  virtual Iterator* GetIterator(const ReadPublicOptions& read_options) = 0;
 
-  virtual Iterator* GetIterator(const ReadOptions& read_options,
+  virtual Iterator* GetIterator(const ReadPublicOptions& read_options,
                                 ColumnFamilyHandle* column_family) = 0;
 
   // Put, Merge, Delete, and SingleDelete behave similarly to the corresponding
@@ -681,4 +681,3 @@ class Transaction {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-

@@ -34,11 +34,11 @@ Status VerifySstFileChecksum(const Options& options,
                              const EnvOptions& env_options,
                              const std::string& file_path) {
   // TODO: plumb IOActivity down
-  return VerifySstFileChecksum(options, env_options, ReadOptions(), file_path);
+  return VerifySstFileChecksum(options, env_options, ReadPublicOptions(), file_path);
 }
 Status VerifySstFileChecksum(const Options& options,
                              const EnvOptions& env_options,
-                             const ReadOptions& read_options,
+                             const ReadPublicOptions& read_options,
                              const std::string& file_path,
                              const SequenceNumber& largest_seqno) {
   std::unique_ptr<FSRandomAccessFile> file;
@@ -77,4 +77,3 @@ Status VerifySstFileChecksum(const Options& options,
 }
 
 }  // namespace ROCKSDB_NAMESPACE
-

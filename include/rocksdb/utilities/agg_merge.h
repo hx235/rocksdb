@@ -58,7 +58,7 @@ namespace ROCKSDB_NAMESPACE {
 //    db->Merge(WriteOptions(), "foo", encoded_value);
 //
 //    std::string value;
-//    Status s = db->Get(ReadOptions, "foo", &value);
+//    Status s = db->Get(ReadPublicOptions, "foo", &value);
 //    assert(s.ok());
 //    Slice func, aggregated_value;
 //    assert(ExtractAggFuncAndValue(value, func, aggregated_value));

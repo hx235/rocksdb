@@ -139,15 +139,15 @@ class BlobDB : public StackableDB {
   }
 
   using ROCKSDB_NAMESPACE::StackableDB::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override = 0;
 
   // Get value and expiration.
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value, uint64_t* expiration) = 0;
-  virtual Status Get(const ReadOptions& options, const Slice& key,
+  virtual Status Get(const ReadPublicOptions& options, const Slice& key,
                      PinnableSlice* value, uint64_t* expiration) {
     return Get(options, DefaultColumnFamily(), key, value, expiration);
   }
@@ -171,7 +171,7 @@ class BlobDB : public StackableDB {
     }
     return MultiGet(options, keys, values);
   }
-  virtual void MultiGet(const ReadOptions& /*options*/,
+  virtual void MultiGet(const ReadPublicOptions& /*options*/,
                         ColumnFamilyHandle* /*column_family*/,
                         const size_t num_keys, const Slice* /*keys*/,
                         PinnableSlice* /*values*/, Status* statuses,
@@ -200,8 +200,8 @@ class BlobDB : public StackableDB {
                        WriteBatch* updates) override = 0;
 
   using ROCKSDB_NAMESPACE::StackableDB::NewIterator;
-  virtual Iterator* NewIterator(const ReadOptions& options) override = 0;
-  virtual Iterator* NewIterator(const ReadOptions& options,
+  virtual Iterator* NewIterator(const ReadPublicOptions& options) override = 0;
+  virtual Iterator* NewIterator(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family) override {
     if (column_family->GetID() != DefaultColumnFamily()->GetID()) {
       // Blob DB doesn't support non-default column family.

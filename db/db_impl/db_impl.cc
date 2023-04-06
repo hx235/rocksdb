@@ -1904,13 +1904,13 @@ ColumnFamilyHandle* DBImpl::PersistentStatsColumnFamily() const {
   return persist_stats_cf_handle_;
 }
 
-Status DBImpl::Get(const ReadOptions& read_options,
+Status DBImpl::Get(const ReadPublicOptions& read_options,
                    ColumnFamilyHandle* column_family, const Slice& key,
                    PinnableSlice* value) {
   return Get(read_options, column_family, key, value, /*timestamp=*/nullptr);
 }
 
-Status DBImpl::Get(const ReadOptions& read_options,
+Status DBImpl::Get(const ReadPublicOptions& read_options,
                    ColumnFamilyHandle* column_family, const Slice& key,
                    PinnableSlice* value, std::string* timestamp) {
   assert(value != nullptr);
@@ -1923,7 +1923,7 @@ Status DBImpl::Get(const ReadOptions& read_options,
   return s;
 }
 
-Status DBImpl::GetEntity(const ReadOptions& read_options,
+Status DBImpl::GetEntity(const ReadPublicOptions& read_options,
                          ColumnFamilyHandle* column_family, const Slice& key,
                          PinnableWideColumns* columns) {
   if (!column_family) {
@@ -2265,7 +2265,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
 }
 
 std::vector<Status> DBImpl::MultiGet(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_family,
     const std::vector<Slice>& keys, std::vector<std::string>* values) {
   return MultiGet(read_options, column_family, keys, values,
@@ -2273,7 +2273,7 @@ std::vector<Status> DBImpl::MultiGet(
 }
 
 std::vector<Status> DBImpl::MultiGet(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_family,
     const std::vector<Slice>& keys, std::vector<std::string>* values,
     std::vector<std::string>* timestamps) {
@@ -2596,7 +2596,7 @@ bool DBImpl::MultiCFSnapshot(
   return last_try;
 }
 
-void DBImpl::MultiGet(const ReadOptions& read_options, const size_t num_keys,
+void DBImpl::MultiGet(const ReadPublicOptions& read_options, const size_t num_keys,
                       ColumnFamilyHandle** column_families, const Slice* keys,
                       PinnableSlice* values, Status* statuses,
                       const bool sorted_input) {
@@ -2604,7 +2604,7 @@ void DBImpl::MultiGet(const ReadOptions& read_options, const size_t num_keys,
            /* timestamps */ nullptr, statuses, sorted_input);
 }
 
-void DBImpl::MultiGet(const ReadOptions& read_options, const size_t num_keys,
+void DBImpl::MultiGet(const ReadPublicOptions& read_options, const size_t num_keys,
                       ColumnFamilyHandle** column_families, const Slice* keys,
                       PinnableSlice* values, std::string* timestamps,
                       Status* statuses, const bool sorted_input) {
@@ -2797,7 +2797,7 @@ void DBImpl::PrepareMultiGetKeys(
             CompareKeyContext());
 }
 
-void DBImpl::MultiGet(const ReadOptions& read_options,
+void DBImpl::MultiGet(const ReadPublicOptions& read_options,
                       ColumnFamilyHandle* column_family, const size_t num_keys,
                       const Slice* keys, PinnableSlice* values,
                       Status* statuses, const bool sorted_input) {
@@ -2805,7 +2805,7 @@ void DBImpl::MultiGet(const ReadOptions& read_options,
            /* timestamps */ nullptr, statuses, sorted_input);
 }
 
-void DBImpl::MultiGet(const ReadOptions& read_options,
+void DBImpl::MultiGet(const ReadPublicOptions& read_options,
                       ColumnFamilyHandle* column_family, const size_t num_keys,
                       const Slice* keys, PinnableSlice* values,
                       std::string* timestamps, Status* statuses,
@@ -3042,7 +3042,7 @@ Status DBImpl::MultiGetImpl(
   return s;
 }
 
-void DBImpl::MultiGetEntity(const ReadOptions& options, size_t num_keys,
+void DBImpl::MultiGetEntity(const ReadPublicOptions& options, size_t num_keys,
                             ColumnFamilyHandle** column_families,
                             const Slice* keys, PinnableWideColumns* results,
                             Status* statuses, bool sorted_input) {
@@ -3050,7 +3050,7 @@ void DBImpl::MultiGetEntity(const ReadOptions& options, size_t num_keys,
                  results, /* timestamps */ nullptr, statuses, sorted_input);
 }
 
-void DBImpl::MultiGetEntity(const ReadOptions& options,
+void DBImpl::MultiGetEntity(const ReadPublicOptions& options,
                             ColumnFamilyHandle* column_family, size_t num_keys,
                             const Slice* keys, PinnableWideColumns* results,
                             Status* statuses, bool sorted_input) {
@@ -3319,7 +3319,7 @@ Status DBImpl::DropColumnFamilyImpl(ColumnFamilyHandle* column_family) {
   return s;
 }
 
-bool DBImpl::KeyMayExist(const ReadOptions& read_options,
+bool DBImpl::KeyMayExist(const ReadPublicOptions& read_options,
                          ColumnFamilyHandle* column_family, const Slice& key,
                          std::string* value, std::string* timestamp,
                          bool* value_found) {
@@ -3345,7 +3345,7 @@ bool DBImpl::KeyMayExist(const ReadOptions& read_options,
   return s.ok() || s.IsIncomplete();
 }
 
-Iterator* DBImpl::NewIterator(const ReadOptions& read_options,
+Iterator* DBImpl::NewIterator(const ReadPublicOptions& read_options,
                               ColumnFamilyHandle* column_family) {
   if (read_options.managed) {
     return NewErrorIterator(
@@ -3481,7 +3481,7 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
 }
 
 Status DBImpl::NewIterators(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_families,
     std::vector<Iterator*>* iterators) {
   if (read_options.managed) {
@@ -5632,7 +5632,7 @@ Status DBImpl::CreateColumnFamilyWithImport(
   return status;
 }
 
-Status DBImpl::VerifyFileChecksums(const ReadOptions& read_options) {
+Status DBImpl::VerifyFileChecksums(const ReadPublicOptions& read_options) {
   return VerifyChecksumInternal(read_options, /*use_file_checksum=*/true);
 }
 

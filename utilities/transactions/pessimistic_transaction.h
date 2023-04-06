@@ -223,11 +223,11 @@ class WriteCommittedTxn : public PessimisticTransaction {
   ~WriteCommittedTxn() override {}
 
   using TransactionBaseImpl::GetForUpdate;
-  Status GetForUpdate(const ReadOptions& read_options,
+  Status GetForUpdate(const ReadPublicOptions& read_options,
                       ColumnFamilyHandle* column_family, const Slice& key,
                       std::string* value, bool exclusive,
                       const bool do_validate) override;
-  Status GetForUpdate(const ReadOptions& read_options,
+  Status GetForUpdate(const ReadPublicOptions& read_options,
                       ColumnFamilyHandle* column_family, const Slice& key,
                       PinnableSlice* pinnable_val, bool exclusive,
                       const bool do_validate) override;
@@ -308,4 +308,3 @@ class WriteCommittedTxn : public PessimisticTransaction {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-

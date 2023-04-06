@@ -385,7 +385,7 @@ static void CleanupWriteUnpreparedTxnDBIterator(void* arg1, void* /*arg2*/) {
 }
 }  // anonymous namespace
 
-Iterator* WriteUnpreparedTxnDB::NewIterator(const ReadOptions& options,
+Iterator* WriteUnpreparedTxnDB::NewIterator(const ReadPublicOptions& options,
                                             ColumnFamilyHandle* column_family,
                                             WriteUnpreparedTxn* txn) {
   // TODO(lth): Refactor so that this logic is shared with WritePrepared.

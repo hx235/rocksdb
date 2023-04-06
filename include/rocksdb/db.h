@@ -50,7 +50,7 @@ struct DBOptions;
 struct ExternalSstFileInfo;
 struct FlushOptions;
 struct Options;
-struct ReadOptions;
+struct ReadPublicOptions;
 struct TableProperties;
 struct WriteOptions;
 class Env;
@@ -521,7 +521,7 @@ class DB {
   //
   // Returns OK on success. Returns NotFound and an empty value in "*value" if
   // there is no entry for "key". Returns some other non-OK status on error.
-  virtual inline Status Get(const ReadOptions& options,
+  virtual inline Status Get(const ReadPublicOptions& options,
                             ColumnFamilyHandle* column_family, const Slice& key,
                             std::string* value) {
     assert(value != nullptr);
@@ -533,17 +533,17 @@ class DB {
     }  // else value is already assigned
     return s;
   }
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) = 0;
-  virtual Status Get(const ReadOptions& options, const Slice& key,
+  virtual Status Get(const ReadPublicOptions& options, const Slice& key,
                      std::string* value) {
     return Get(options, DefaultColumnFamily(), key, value);
   }
 
   // Get() methods that return timestamp. Derived DB classes don't need to worry
   // about this group of methods if they don't care about timestamp feature.
-  virtual inline Status Get(const ReadOptions& options,
+  virtual inline Status Get(const ReadPublicOptions& options,
                             ColumnFamilyHandle* column_family, const Slice& key,
                             std::string* value, std::string* timestamp) {
     assert(value != nullptr);
@@ -555,14 +555,14 @@ class DB {
     }  // else value is already assigned
     return s;
   }
-  virtual Status Get(const ReadOptions& /*options*/,
+  virtual Status Get(const ReadPublicOptions& /*options*/,
                      ColumnFamilyHandle* /*column_family*/,
                      const Slice& /*key*/, PinnableSlice* /*value*/,
                      std::string* /*timestamp*/) {
     return Status::NotSupported(
         "Get() that returns timestamp is not implemented.");
   }
-  virtual Status Get(const ReadOptions& options, const Slice& key,
+  virtual Status Get(const ReadPublicOptions& options, const Slice& key,
                      std::string* value, std::string* timestamp) {
     return Get(options, DefaultColumnFamily(), key, value, timestamp);
   }
@@ -576,7 +576,7 @@ class DB {
   // Returns OK on success. Returns NotFound and an empty wide-column entity in
   // "*columns" if there is no entry for "key". Returns some other non-OK status
   // on error.
-  virtual Status GetEntity(const ReadOptions& /* options */,
+  virtual Status GetEntity(const ReadPublicOptions& /* options */,
                            ColumnFamilyHandle* /* column_family */,
                            const Slice& /* key */,
                            PinnableWideColumns* /* columns */) {
@@ -602,7 +602,7 @@ class DB {
   // they are no longer needed. All `merge_operands` entries must be destroyed
   // or `Reset()` before this DB is closed or destroyed.
   virtual Status GetMergeOperands(
-      const ReadOptions& options, ColumnFamilyHandle* column_family,
+      const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
       const Slice& key, PinnableSlice* merge_operands,
       GetMergeOperandsOptions* get_merge_operands_options,
       int* number_of_operands) = 0;
@@ -623,10 +623,10 @@ class DB {
   // Note: keys will not be "de-duplicated". Duplicate keys will return
   // duplicate values in order.
   virtual std::vector<Status> MultiGet(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_family,
       const std::vector<Slice>& keys, std::vector<std::string>* values) = 0;
-  virtual std::vector<Status> MultiGet(const ReadOptions& options,
+  virtual std::vector<Status> MultiGet(const ReadPublicOptions& options,
                                        const std::vector<Slice>& keys,
                                        std::vector<std::string>* values) {
     return MultiGet(
@@ -636,7 +636,7 @@ class DB {
   }
 
   virtual std::vector<Status> MultiGet(
-      const ReadOptions& /*options*/,
+      const ReadPublicOptions& /*options*/,
       const std::vector<ColumnFamilyHandle*>& /*column_family*/,
       const std::vector<Slice>& keys, std::vector<std::string>* /*values*/,
       std::vector<std::string>* /*timestamps*/) {
@@ -644,7 +644,7 @@ class DB {
         keys.size(), Status::NotSupported(
                          "MultiGet() returning timestamps not implemented."));
   }
-  virtual std::vector<Status> MultiGet(const ReadOptions& options,
+  virtual std::vector<Status> MultiGet(const ReadPublicOptions& options,
                                        const std::vector<Slice>& keys,
                                        std::vector<std::string>* values,
                                        std::vector<std::string>* timestamps) {
@@ -661,7 +661,7 @@ class DB {
   // partitioned indexes will still work, but will not get any performance
   // benefits.
   // Parameters -
-  // options - ReadOptions
+  // options - ReadPublicOptions
   // column_family - ColumnFamilyHandle* that the keys belong to. All the keys
   //                 passed to the API are restricted to a single column family
   // num_keys - Number of keys to lookup
@@ -673,7 +673,7 @@ class DB {
   //                again. If false, the keys will be copied and sorted
   //                internally by the API - the input array will not be
   //                modified
-  virtual void MultiGet(const ReadOptions& options,
+  virtual void MultiGet(const ReadPublicOptions& options,
                         ColumnFamilyHandle* column_family,
                         const size_t num_keys, const Slice* keys,
                         PinnableSlice* values, Status* statuses,
@@ -695,7 +695,7 @@ class DB {
     }
   }
 
-  virtual void MultiGet(const ReadOptions& options,
+  virtual void MultiGet(const ReadPublicOptions& options,
                         ColumnFamilyHandle* column_family,
                         const size_t num_keys, const Slice* keys,
                         PinnableSlice* values, std::string* timestamps,
@@ -726,7 +726,7 @@ class DB {
   // partitioned indexes will still work, but will not get any performance
   // benefits.
   // Parameters -
-  // options - ReadOptions
+  // options - ReadPublicOptions
   // column_family - ColumnFamilyHandle* that the keys belong to. All the keys
   //                 passed to the API are restricted to a single column family
   // num_keys - Number of keys to lookup
@@ -738,7 +738,7 @@ class DB {
   //                again. If false, the keys will be copied and sorted
   //                internally by the API - the input array will not be
   //                modified
-  virtual void MultiGet(const ReadOptions& options, const size_t num_keys,
+  virtual void MultiGet(const ReadPublicOptions& options, const size_t num_keys,
                         ColumnFamilyHandle** column_families, const Slice* keys,
                         PinnableSlice* values, Status* statuses,
                         const bool /*sorted_input*/ = false) {
@@ -758,7 +758,7 @@ class DB {
       values++;
     }
   }
-  virtual void MultiGet(const ReadOptions& options, const size_t num_keys,
+  virtual void MultiGet(const ReadPublicOptions& options, const size_t num_keys,
                         ColumnFamilyHandle** column_families, const Slice* keys,
                         PinnableSlice* values, std::string* timestamps,
                         Status* statuses, const bool /*sorted_input*/ = false) {
@@ -800,7 +800,7 @@ class DB {
   // Note that it is the caller's responsibility to ensure that "keys",
   // "results", and "statuses" point to "num_keys" number of contiguous objects
   // (Slices, PinnableWideColumns, and Statuses respectively).
-  virtual void MultiGetEntity(const ReadOptions& /* options */,
+  virtual void MultiGetEntity(const ReadPublicOptions& /* options */,
                               ColumnFamilyHandle* /* column_family */,
                               size_t num_keys, const Slice* /* keys */,
                               PinnableWideColumns* /* results */,
@@ -832,7 +832,7 @@ class DB {
   // "column_families", "keys", "results", and "statuses" point to "num_keys"
   // number of contiguous objects (ColumnFamilyHandle pointers, Slices,
   // PinnableWideColumns, and Statuses respectively).
-  virtual void MultiGetEntity(const ReadOptions& /* options */, size_t num_keys,
+  virtual void MultiGetEntity(const ReadPublicOptions& /* options */, size_t num_keys,
                               ColumnFamilyHandle** /* column_families */,
                               const Slice* /* keys */,
                               PinnableWideColumns* /* results */,
@@ -850,7 +850,7 @@ class DB {
   // This check is potentially lighter-weight than invoking DB::Get(). One way
   // to make this lighter weight is to avoid doing any IOs.
   // Default implementation here returns true and sets 'value_found' to false
-  virtual bool KeyMayExist(const ReadOptions& /*options*/,
+  virtual bool KeyMayExist(const ReadPublicOptions& /*options*/,
                            ColumnFamilyHandle* /*column_family*/,
                            const Slice& /*key*/, std::string* /*value*/,
                            std::string* /*timestamp*/,
@@ -861,19 +861,19 @@ class DB {
     return true;
   }
 
-  virtual bool KeyMayExist(const ReadOptions& options,
+  virtual bool KeyMayExist(const ReadPublicOptions& options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            std::string* value, bool* value_found = nullptr) {
     return KeyMayExist(options, column_family, key, value,
                        /*timestamp=*/nullptr, value_found);
   }
 
-  virtual bool KeyMayExist(const ReadOptions& options, const Slice& key,
+  virtual bool KeyMayExist(const ReadPublicOptions& options, const Slice& key,
                            std::string* value, bool* value_found = nullptr) {
     return KeyMayExist(options, DefaultColumnFamily(), key, value, value_found);
   }
 
-  virtual bool KeyMayExist(const ReadOptions& options, const Slice& key,
+  virtual bool KeyMayExist(const ReadPublicOptions& options, const Slice& key,
                            std::string* value, std::string* timestamp,
                            bool* value_found = nullptr) {
     return KeyMayExist(options, DefaultColumnFamily(), key, value, timestamp,
@@ -886,16 +886,16 @@ class DB {
   //
   // Caller should delete the iterator when it is no longer needed.
   // The returned iterator should be deleted before this db is deleted.
-  virtual Iterator* NewIterator(const ReadOptions& options,
+  virtual Iterator* NewIterator(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family) = 0;
-  virtual Iterator* NewIterator(const ReadOptions& options) {
+  virtual Iterator* NewIterator(const ReadPublicOptions& options) {
     return NewIterator(options, DefaultColumnFamily());
   }
   // Returns iterators from a consistent database state across multiple
   // column families. Iterators are heap allocated and need to be deleted
   // before the db is deleted
   virtual Status NewIterators(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families,
       std::vector<Iterator*>* iterators) = 0;
 
@@ -1765,15 +1765,15 @@ class DB {
 
   // Verify the checksums of files in db. Currently the whole-file checksum of
   // table files are checked.
-  virtual Status VerifyFileChecksums(const ReadOptions& /*read_options*/) {
+  virtual Status VerifyFileChecksums(const ReadPublicOptions& /*read_options*/) {
     return Status::NotSupported("File verification not supported");
   }
 
   // Verify the block checksums of files in db. The block checksums of table
   // files are checked.
-  virtual Status VerifyChecksum(const ReadOptions& read_options) = 0;
+  virtual Status VerifyChecksum(const ReadPublicOptions& read_options) = 0;
 
-  virtual Status VerifyChecksum() { return VerifyChecksum(ReadOptions()); }
+  virtual Status VerifyChecksum() { return VerifyChecksum(ReadPublicOptions()); }
 
 
   // Returns the unique ID which is read from IDENTITY file during the opening

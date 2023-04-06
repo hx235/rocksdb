@@ -53,7 +53,7 @@ class DBWithTTLImpl : public DBWithTTL {
                      const Slice& val) override;
 
   using StackableDB::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override;
 
@@ -65,7 +65,7 @@ class DBWithTTLImpl : public DBWithTTL {
       std::vector<std::string>* values) override;
 
   using StackableDB::KeyMayExist;
-  virtual bool KeyMayExist(const ReadOptions& options,
+  virtual bool KeyMayExist(const ReadPublicOptions& options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            std::string* value,
                            bool* value_found = nullptr) override;
@@ -78,7 +78,7 @@ class DBWithTTLImpl : public DBWithTTL {
   virtual Status Write(const WriteOptions& opts, WriteBatch* updates) override;
 
   using StackableDB::NewIterator;
-  virtual Iterator* NewIterator(const ReadOptions& opts,
+  virtual Iterator* NewIterator(const ReadPublicOptions& opts,
                                 ColumnFamilyHandle* column_family) override;
 
   virtual DB* GetBaseDB() override { return db_; }

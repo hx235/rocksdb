@@ -247,7 +247,7 @@ Status WritePreparedTxnDB::WriteInternal(const WriteOptions& write_options_orig,
   return s;
 }
 
-Status WritePreparedTxnDB::Get(const ReadOptions& options,
+Status WritePreparedTxnDB::Get(const ReadPublicOptions& options,
                                ColumnFamilyHandle* column_family,
                                const Slice& key, PinnableSlice* value) {
   SequenceNumber min_uncommitted, snap_seq;
@@ -309,7 +309,7 @@ void WritePreparedTxnDB::UpdateCFComparatorMap(ColumnFamilyHandle* h) {
 }
 
 std::vector<Status> WritePreparedTxnDB::MultiGet(
-    const ReadOptions& options,
+    const ReadPublicOptions& options,
     const std::vector<ColumnFamilyHandle*>& column_family,
     const std::vector<Slice>& keys, std::vector<std::string>* values) {
   assert(values);
@@ -341,7 +341,7 @@ static void CleanupWritePreparedTxnDBIterator(void* arg1, void* /*arg2*/) {
 }
 }  // anonymous namespace
 
-Iterator* WritePreparedTxnDB::NewIterator(const ReadOptions& options,
+Iterator* WritePreparedTxnDB::NewIterator(const ReadPublicOptions& options,
                                           ColumnFamilyHandle* column_family) {
   constexpr bool expose_blob_index = false;
   constexpr bool allow_refresh = false;
@@ -375,7 +375,7 @@ Iterator* WritePreparedTxnDB::NewIterator(const ReadOptions& options,
 }
 
 Status WritePreparedTxnDB::NewIterators(
-    const ReadOptions& options,
+    const ReadPublicOptions& options,
     const std::vector<ColumnFamilyHandle*>& column_families,
     std::vector<Iterator*>* iterators) {
   constexpr bool expose_blob_index = false;

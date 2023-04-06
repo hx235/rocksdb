@@ -145,7 +145,7 @@ WriteCommittedTxn::WriteCommittedTxn(TransactionDB* txn_db,
                                      const TransactionOptions& txn_options)
     : PessimisticTransaction(txn_db, write_options, txn_options) {}
 
-Status WriteCommittedTxn::GetForUpdate(const ReadOptions& read_options,
+Status WriteCommittedTxn::GetForUpdate(const ReadPublicOptions& read_options,
                                        ColumnFamilyHandle* column_family,
                                        const Slice& key, std::string* value,
                                        bool exclusive, const bool do_validate) {
@@ -153,7 +153,7 @@ Status WriteCommittedTxn::GetForUpdate(const ReadOptions& read_options,
                           do_validate);
 }
 
-Status WriteCommittedTxn::GetForUpdate(const ReadOptions& read_options,
+Status WriteCommittedTxn::GetForUpdate(const ReadPublicOptions& read_options,
                                        ColumnFamilyHandle* column_family,
                                        const Slice& key,
                                        PinnableSlice* pinnable_val,
@@ -1170,4 +1170,3 @@ Status PessimisticTransaction::SetName(const TransactionName& name) {
 }
 
 }  // namespace ROCKSDB_NAMESPACE
-

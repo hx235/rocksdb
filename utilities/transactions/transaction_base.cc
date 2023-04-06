@@ -232,7 +232,7 @@ Status TransactionBaseImpl::PopSavePoint() {
   return write_batch_.PopSavePoint();
 }
 
-Status TransactionBaseImpl::Get(const ReadOptions& read_options,
+Status TransactionBaseImpl::Get(const ReadPublicOptions& read_options,
                                 ColumnFamilyHandle* column_family,
                                 const Slice& key, std::string* value) {
   assert(value != nullptr);
@@ -245,14 +245,14 @@ Status TransactionBaseImpl::Get(const ReadOptions& read_options,
   return s;
 }
 
-Status TransactionBaseImpl::Get(const ReadOptions& read_options,
+Status TransactionBaseImpl::Get(const ReadPublicOptions& read_options,
                                 ColumnFamilyHandle* column_family,
                                 const Slice& key, PinnableSlice* pinnable_val) {
   return write_batch_.GetFromBatchAndDB(db_, read_options, column_family, key,
                                         pinnable_val);
 }
 
-Status TransactionBaseImpl::GetForUpdate(const ReadOptions& read_options,
+Status TransactionBaseImpl::GetForUpdate(const ReadPublicOptions& read_options,
                                          ColumnFamilyHandle* column_family,
                                          const Slice& key, std::string* value,
                                          bool exclusive,
@@ -277,7 +277,7 @@ Status TransactionBaseImpl::GetForUpdate(const ReadOptions& read_options,
   return s;
 }
 
-Status TransactionBaseImpl::GetForUpdate(const ReadOptions& read_options,
+Status TransactionBaseImpl::GetForUpdate(const ReadPublicOptions& read_options,
                                          ColumnFamilyHandle* column_family,
                                          const Slice& key,
                                          PinnableSlice* pinnable_val,
@@ -298,7 +298,7 @@ Status TransactionBaseImpl::GetForUpdate(const ReadOptions& read_options,
 }
 
 std::vector<Status> TransactionBaseImpl::MultiGet(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_family,
     const std::vector<Slice>& keys, std::vector<std::string>* values) {
   size_t num_keys = keys.size();
@@ -312,7 +312,7 @@ std::vector<Status> TransactionBaseImpl::MultiGet(
   return stat_list;
 }
 
-void TransactionBaseImpl::MultiGet(const ReadOptions& read_options,
+void TransactionBaseImpl::MultiGet(const ReadPublicOptions& read_options,
                                    ColumnFamilyHandle* column_family,
                                    const size_t num_keys, const Slice* keys,
                                    PinnableSlice* values, Status* statuses,
@@ -323,7 +323,7 @@ void TransactionBaseImpl::MultiGet(const ReadOptions& read_options,
 }
 
 std::vector<Status> TransactionBaseImpl::MultiGetForUpdate(
-    const ReadOptions& read_options,
+    const ReadPublicOptions& read_options,
     const std::vector<ColumnFamilyHandle*>& column_family,
     const std::vector<Slice>& keys, std::vector<std::string>* values) {
   // Regardless of whether the MultiGet succeeded, track these keys.
@@ -349,7 +349,7 @@ std::vector<Status> TransactionBaseImpl::MultiGetForUpdate(
   return stat_list;
 }
 
-Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options) {
+Iterator* TransactionBaseImpl::GetIterator(const ReadPublicOptions& read_options) {
   Iterator* db_iter = db_->NewIterator(read_options);
   assert(db_iter);
 
@@ -357,7 +357,7 @@ Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options) {
                                           &read_options);
 }
 
-Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options,
+Iterator* TransactionBaseImpl::GetIterator(const ReadPublicOptions& read_options,
                                            ColumnFamilyHandle* column_family) {
   Iterator* db_iter = db_->NewIterator(read_options, column_family);
   assert(db_iter);
@@ -726,4 +726,3 @@ WriteBatch* TransactionBaseImpl::GetCommitTimeWriteBatch() {
   return &commit_time_batch_;
 }
 }  // namespace ROCKSDB_NAMESPACE
-

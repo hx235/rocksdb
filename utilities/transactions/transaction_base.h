@@ -53,29 +53,29 @@ class TransactionBaseImpl : public Transaction {
   Status PopSavePoint() override;
 
   using Transaction::Get;
-  Status Get(const ReadOptions& options, ColumnFamilyHandle* column_family,
+  Status Get(const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
              const Slice& key, std::string* value) override;
 
-  Status Get(const ReadOptions& options, ColumnFamilyHandle* column_family,
+  Status Get(const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
              const Slice& key, PinnableSlice* value) override;
 
-  Status Get(const ReadOptions& options, const Slice& key,
+  Status Get(const ReadPublicOptions& options, const Slice& key,
              std::string* value) override {
     return Get(options, db_->DefaultColumnFamily(), key, value);
   }
 
   using Transaction::GetForUpdate;
-  Status GetForUpdate(const ReadOptions& options,
+  Status GetForUpdate(const ReadPublicOptions& options,
                       ColumnFamilyHandle* column_family, const Slice& key,
                       std::string* value, bool exclusive,
                       const bool do_validate) override;
 
-  Status GetForUpdate(const ReadOptions& options,
+  Status GetForUpdate(const ReadPublicOptions& options,
                       ColumnFamilyHandle* column_family, const Slice& key,
                       PinnableSlice* pinnable_val, bool exclusive,
                       const bool do_validate) override;
 
-  Status GetForUpdate(const ReadOptions& options, const Slice& key,
+  Status GetForUpdate(const ReadPublicOptions& options, const Slice& key,
                       std::string* value, bool exclusive,
                       const bool do_validate) override {
     return GetForUpdate(options, db_->DefaultColumnFamily(), key, value,
@@ -84,12 +84,12 @@ class TransactionBaseImpl : public Transaction {
 
   using Transaction::MultiGet;
   std::vector<Status> MultiGet(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_family,
       const std::vector<Slice>& keys,
       std::vector<std::string>* values) override;
 
-  std::vector<Status> MultiGet(const ReadOptions& options,
+  std::vector<Status> MultiGet(const ReadPublicOptions& options,
                                const std::vector<Slice>& keys,
                                std::vector<std::string>* values) override {
     return MultiGet(options,
@@ -98,19 +98,19 @@ class TransactionBaseImpl : public Transaction {
                     keys, values);
   }
 
-  void MultiGet(const ReadOptions& options, ColumnFamilyHandle* column_family,
+  void MultiGet(const ReaPublicdOptions& options, ColumnFamilyHandle* column_family,
                 const size_t num_keys, const Slice* keys, PinnableSlice* values,
                 Status* statuses, const bool sorted_input = false) override;
 
   using Transaction::MultiGetForUpdate;
   std::vector<Status> MultiGetForUpdate(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_family,
       const std::vector<Slice>& keys,
       std::vector<std::string>* values) override;
 
   std::vector<Status> MultiGetForUpdate(
-      const ReadOptions& options, const std::vector<Slice>& keys,
+      const ReadPublicOptions& options, const std::vector<Slice>& keys,
       std::vector<std::string>* values) override {
     return MultiGetForUpdate(options,
                              std::vector<ColumnFamilyHandle*>(
@@ -118,8 +118,8 @@ class TransactionBaseImpl : public Transaction {
                              keys, values);
   }
 
-  Iterator* GetIterator(const ReadOptions& read_options) override;
-  Iterator* GetIterator(const ReadOptions& read_options,
+  Iterator* GetIterator(const ReadPublicOptions& read_options) override;
+  Iterator* GetIterator(const ReadPublicOptions& read_options,
                         ColumnFamilyHandle* column_family) override;
 
   Status Put(ColumnFamilyHandle* column_family, const Slice& key,
@@ -379,4 +379,3 @@ class TransactionBaseImpl : public Transaction {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-

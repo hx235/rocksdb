@@ -94,14 +94,14 @@ class StackableDB : public DB {
   }
 
   using DB::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override {
     return db_->Get(options, column_family, key, value);
   }
 
   using DB::GetEntity;
-  Status GetEntity(const ReadOptions& options,
+  Status GetEntity(const ReadPublicOptions& options,
                    ColumnFamilyHandle* column_family, const Slice& key,
                    PinnableWideColumns* columns) override {
     return db_->GetEntity(options, column_family, key, columns);
@@ -109,7 +109,7 @@ class StackableDB : public DB {
 
   using DB::GetMergeOperands;
   virtual Status GetMergeOperands(
-      const ReadOptions& options, ColumnFamilyHandle* column_family,
+      const ReadPublicOptions& options, ColumnFamilyHandle* column_family,
       const Slice& key, PinnableSlice* slice,
       GetMergeOperandsOptions* get_merge_operands_options,
       int* number_of_operands) override {
@@ -120,14 +120,14 @@ class StackableDB : public DB {
 
   using DB::MultiGet;
   virtual std::vector<Status> MultiGet(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_family,
       const std::vector<Slice>& keys,
       std::vector<std::string>* values) override {
     return db_->MultiGet(options, column_family, keys, values);
   }
 
-  virtual void MultiGet(const ReadOptions& options,
+  virtual void MultiGet(const ReadPublicOptions& options,
                         ColumnFamilyHandle* column_family,
                         const size_t num_keys, const Slice* keys,
                         PinnableSlice* values, Status* statuses,
@@ -138,7 +138,7 @@ class StackableDB : public DB {
 
   using DB::MultiGetEntity;
 
-  void MultiGetEntity(const ReadOptions& options,
+  void MultiGetEntity(const ReadPublicOptions& options,
                       ColumnFamilyHandle* column_family, size_t num_keys,
                       const Slice* keys, PinnableWideColumns* results,
                       Status* statuses, bool sorted_input) override {
@@ -146,7 +146,7 @@ class StackableDB : public DB {
                         statuses, sorted_input);
   }
 
-  void MultiGetEntity(const ReadOptions& options, size_t num_keys,
+  void MultiGetEntity(const ReadPublicOptions& options, size_t num_keys,
                       ColumnFamilyHandle** column_families, const Slice* keys,
                       PinnableWideColumns* results, Status* statuses,
                       bool sorted_input) override {
@@ -179,18 +179,18 @@ class StackableDB : public DB {
   }
 
   using DB::VerifyFileChecksums;
-  Status VerifyFileChecksums(const ReadOptions& read_opts) override {
+  Status VerifyFileChecksums(const ReadPublicOptions& read_opts) override {
     return db_->VerifyFileChecksums(read_opts);
   }
 
   virtual Status VerifyChecksum() override { return db_->VerifyChecksum(); }
 
-  virtual Status VerifyChecksum(const ReadOptions& options) override {
+  virtual Status VerifyChecksum(const ReadPublicOptions& options) override {
     return db_->VerifyChecksum(options);
   }
 
   using DB::KeyMayExist;
-  virtual bool KeyMayExist(const ReadOptions& options,
+  virtual bool KeyMayExist(const ReadPublicOptions& options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            std::string* value,
                            bool* value_found = nullptr) override {
@@ -243,13 +243,13 @@ class StackableDB : public DB {
   }
 
   using DB::NewIterator;
-  virtual Iterator* NewIterator(const ReadOptions& opts,
+  virtual Iterator* NewIterator(const ReadPublicOptions& opts,
                                 ColumnFamilyHandle* column_family) override {
     return db_->NewIterator(opts, column_family);
   }
 
   virtual Status NewIterators(
-      const ReadOptions& options,
+      const ReadPublicOptions& options,
       const std::vector<ColumnFamilyHandle*>& column_families,
       std::vector<Iterator*>* iterators) override {
     return db_->NewIterators(options, column_families, iterators);

@@ -39,7 +39,7 @@ void WritePreparedTxn::Initialize(const TransactionOptions& txn_options) {
   prepare_batch_cnt_ = 0;
 }
 
-void WritePreparedTxn::MultiGet(const ReadOptions& options,
+void WritePreparedTxn::MultiGet(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family,
                                 const size_t num_keys, const Slice* keys,
                                 PinnableSlice* values, Status* statuses,
@@ -61,7 +61,7 @@ void WritePreparedTxn::MultiGet(const ReadOptions& options,
   }
 }
 
-Status WritePreparedTxn::Get(const ReadOptions& options,
+Status WritePreparedTxn::Get(const ReadPublicOptions& options,
                              ColumnFamilyHandle* column_family,
                              const Slice& key, PinnableSlice* pinnable_val) {
   SequenceNumber min_uncommitted, snap_seq;
@@ -86,7 +86,7 @@ Status WritePreparedTxn::Get(const ReadOptions& options,
   return res;
 }
 
-Iterator* WritePreparedTxn::GetIterator(const ReadOptions& options) {
+Iterator* WritePreparedTxn::GetIterator(const ReadPublicOptions& options) {
   // Make sure to get iterator from WritePrepareTxnDB, not the root db.
   Iterator* db_iter = wpt_db_->NewIterator(options);
   assert(db_iter);
@@ -94,7 +94,7 @@ Iterator* WritePreparedTxn::GetIterator(const ReadOptions& options) {
   return write_batch_.NewIteratorWithBase(db_iter);
 }
 
-Iterator* WritePreparedTxn::GetIterator(const ReadOptions& options,
+Iterator* WritePreparedTxn::GetIterator(const ReadPublicOptions& options,
                                         ColumnFamilyHandle* column_family) {
   // Make sure to get iterator from WritePrepareTxnDB, not the root db.
   Iterator* db_iter = wpt_db_->NewIterator(options, column_family);

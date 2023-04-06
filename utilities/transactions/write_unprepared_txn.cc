@@ -944,7 +944,7 @@ Status WriteUnpreparedTxn::PopSavePoint() {
   return Status::NotFound();
 }
 
-void WriteUnpreparedTxn::MultiGet(const ReadOptions& options,
+void WriteUnpreparedTxn::MultiGet(const ReadPublicOptions& options,
                                   ColumnFamilyHandle* column_family,
                                   const size_t num_keys, const Slice* keys,
                                   PinnableSlice* values, Status* statuses,
@@ -966,7 +966,7 @@ void WriteUnpreparedTxn::MultiGet(const ReadOptions& options,
   }
 }
 
-Status WriteUnpreparedTxn::Get(const ReadOptions& options,
+Status WriteUnpreparedTxn::Get(const ReadPublicOptions& options,
                                ColumnFamilyHandle* column_family,
                                const Slice& key, PinnableSlice* value) {
   SequenceNumber min_uncommitted, snap_seq;
@@ -994,11 +994,11 @@ static void CleanupWriteUnpreparedWBWIIterator(void* arg1, void* arg2) {
 }
 }  // anonymous namespace
 
-Iterator* WriteUnpreparedTxn::GetIterator(const ReadOptions& options) {
+Iterator* WriteUnpreparedTxn::GetIterator(const ReadPublicOptions& options) {
   return GetIterator(options, wupt_db_->DefaultColumnFamily());
 }
 
-Iterator* WriteUnpreparedTxn::GetIterator(const ReadOptions& options,
+Iterator* WriteUnpreparedTxn::GetIterator(const ReadPublicOptions& options,
                                           ColumnFamilyHandle* column_family) {
   // Make sure to get iterator from WriteUnprepareTxnDB, not the root db.
   Iterator* db_iter = wupt_db_->NewIterator(options, column_family, this);

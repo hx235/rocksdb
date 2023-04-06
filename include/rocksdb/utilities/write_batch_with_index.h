@@ -28,7 +28,7 @@ class ColumnFamilyHandle;
 class Comparator;
 class DB;
 class ReadCallback;
-struct ReadOptions;
+struct ReadPublicOptions;
 struct DBOptions;
 
 enum WriteType {
@@ -203,7 +203,7 @@ class WriteBatchWithIndex : public WriteBatchBase {
   // called.
   Iterator* NewIteratorWithBase(ColumnFamilyHandle* column_family,
                                 Iterator* base_iterator,
-                                const ReadOptions* opts = nullptr);
+                                const ReadPublicOptions* opts = nullptr);
   // default column family
   Iterator* NewIteratorWithBase(Iterator* base_iterator);
 
@@ -232,23 +232,23 @@ class WriteBatchWithIndex : public WriteBatchBase {
   // but will NOT change which keys are read from the batch (the keys in
   // this batch do not yet belong to any snapshot and will be fetched
   // regardless).
-  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  Status GetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                            const Slice& key, std::string* value);
 
   // An overload of the above method that receives a PinnableSlice
-  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  Status GetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                            const Slice& key, PinnableSlice* value);
 
-  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  Status GetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            std::string* value);
 
   // An overload of the above method that receives a PinnableSlice
-  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  Status GetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            PinnableSlice* value);
 
-  void MultiGetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  void MultiGetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                               ColumnFamilyHandle* column_family,
                               const size_t num_keys, const Slice* keys,
                               PinnableSlice* values, Status* statuses,
@@ -291,10 +291,10 @@ class WriteBatchWithIndex : public WriteBatchBase {
   // last sub-batch.
   size_t SubBatchCnt();
 
-  Status GetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  Status GetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                            ColumnFamilyHandle* column_family, const Slice& key,
                            PinnableSlice* value, ReadCallback* callback);
-  void MultiGetFromBatchAndDB(DB* db, const ReadOptions& read_options,
+  void MultiGetFromBatchAndDB(DB* db, const ReadPublicOptions& read_options,
                               ColumnFamilyHandle* column_family,
                               const size_t num_keys, const Slice* keys,
                               PinnableSlice* values, Status* statuses,
@@ -304,4 +304,3 @@ class WriteBatchWithIndex : public WriteBatchBase {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-

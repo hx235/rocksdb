@@ -103,19 +103,19 @@ class BlobDBImpl : public BlobDB {
              const Slice& value) override;
 
   using BlobDB::Get;
-  Status Get(const ReadOptions& read_options, ColumnFamilyHandle* column_family,
+  Status Get(const ReadPublicOptions& read_options, ColumnFamilyHandle* column_family,
              const Slice& key, PinnableSlice* value) override;
 
-  Status Get(const ReadOptions& read_options, ColumnFamilyHandle* column_family,
+  Status Get(const ReadPublicOptions& read_options, ColumnFamilyHandle* column_family,
              const Slice& key, PinnableSlice* value,
              uint64_t* expiration) override;
 
   using BlobDB::NewIterator;
-  virtual Iterator* NewIterator(const ReadOptions& read_options) override;
+  virtual Iterator* NewIterator(const ReadPublicOptions& read_options) override;
 
   using BlobDB::NewIterators;
   virtual Status NewIterators(
-      const ReadOptions& /*read_options*/,
+      const ReadPublicOptions& /*read_options*/,
       const std::vector<ColumnFamilyHandle*>& /*column_families*/,
       std::vector<Iterator*>* /*iterators*/) override {
     return Status::NotSupported("Not implemented");

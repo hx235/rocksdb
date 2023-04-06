@@ -298,7 +298,7 @@ WBWIIterator* WriteBatchWithIndex::NewIterator(
 
 Iterator* WriteBatchWithIndex::NewIteratorWithBase(
     ColumnFamilyHandle* column_family, Iterator* base_iterator,
-    const ReadOptions* read_options) {
+    const ReadPublicOptions* read_options) {
   auto wbwiii =
       new WBWIIteratorImpl(GetColumnFamilyID(column_family), &(rep->skip_list),
                            &rep->write_batch, &rep->comparator);
@@ -453,7 +453,7 @@ Status WriteBatchWithIndex::GetFromBatch(ColumnFamilyHandle* column_family,
 }
 
 Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
-                                              const ReadOptions& read_options,
+                                              const ReadPublicOptions& read_options,
                                               const Slice& key,
                                               std::string* value) {
   assert(value != nullptr);
@@ -468,7 +468,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
 }
 
 Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
-                                              const ReadOptions& read_options,
+                                              const ReadPublicOptions& read_options,
                                               const Slice& key,
                                               PinnableSlice* pinnable_val) {
   return GetFromBatchAndDB(db, read_options, db->DefaultColumnFamily(), key,
@@ -476,7 +476,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
 }
 
 Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
-                                              const ReadOptions& read_options,
+                                              const ReadPublicOptions& read_options,
                                               ColumnFamilyHandle* column_family,
                                               const Slice& key,
                                               std::string* value) {
@@ -492,7 +492,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
 }
 
 Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
-                                              const ReadOptions& read_options,
+                                              const ReadPublicOptions& read_options,
                                               ColumnFamilyHandle* column_family,
                                               const Slice& key,
                                               PinnableSlice* pinnable_val) {
@@ -501,7 +501,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(DB* db,
 }
 
 Status WriteBatchWithIndex::GetFromBatchAndDB(
-    DB* db, const ReadOptions& read_options, ColumnFamilyHandle* column_family,
+    DB* db, const ReadPublicOptions& read_options, ColumnFamilyHandle* column_family,
     const Slice& key, PinnableSlice* pinnable_val, ReadCallback* callback) {
   const Comparator* const ucmp = rep->comparator.GetComparator(column_family);
   size_t ts_sz = ucmp ? ucmp->timestamp_size() : 0;
@@ -562,7 +562,7 @@ Status WriteBatchWithIndex::GetFromBatchAndDB(
 }
 
 void WriteBatchWithIndex::MultiGetFromBatchAndDB(
-    DB* db, const ReadOptions& read_options, ColumnFamilyHandle* column_family,
+    DB* db, const ReadPublicOptions& read_options, ColumnFamilyHandle* column_family,
     const size_t num_keys, const Slice* keys, PinnableSlice* values,
     Status* statuses, bool sorted_input) {
   MultiGetFromBatchAndDB(db, read_options, column_family, num_keys, keys,
@@ -570,7 +570,7 @@ void WriteBatchWithIndex::MultiGetFromBatchAndDB(
 }
 
 void WriteBatchWithIndex::MultiGetFromBatchAndDB(
-    DB* db, const ReadOptions& read_options, ColumnFamilyHandle* column_family,
+    DB* db, const ReadPublicOptions& read_options, ColumnFamilyHandle* column_family,
     const size_t num_keys, const Slice* keys, PinnableSlice* values,
     Status* statuses, bool sorted_input, ReadCallback* callback) {
   const Comparator* const ucmp = rep->comparator.GetComparator(column_family);

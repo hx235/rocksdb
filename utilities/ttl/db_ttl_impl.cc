@@ -491,7 +491,7 @@ Status DBWithTTLImpl::Put(const WriteOptions& options,
   return st;
 }
 
-Status DBWithTTLImpl::Get(const ReadOptions& options,
+Status DBWithTTLImpl::Get(const ReadPublicOptions& options,
                           ColumnFamilyHandle* column_family, const Slice& key,
                           PinnableSlice* value) {
   Status st = db_->Get(options, column_family, key, value);
@@ -506,7 +506,7 @@ Status DBWithTTLImpl::Get(const ReadOptions& options,
 }
 
 std::vector<Status> DBWithTTLImpl::MultiGet(
-    const ReadOptions& options,
+    const ReadPublicOptions& options,
     const std::vector<ColumnFamilyHandle*>& column_family,
     const std::vector<Slice>& keys, std::vector<std::string>* values) {
   auto statuses = db_->MultiGet(options, column_family, keys, values);
@@ -523,7 +523,7 @@ std::vector<Status> DBWithTTLImpl::MultiGet(
   return statuses;
 }
 
-bool DBWithTTLImpl::KeyMayExist(const ReadOptions& options,
+bool DBWithTTLImpl::KeyMayExist(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family,
                                 const Slice& key, std::string* value,
                                 bool* value_found) {
@@ -594,7 +594,7 @@ Status DBWithTTLImpl::Write(const WriteOptions& opts, WriteBatch* updates) {
   }
 }
 
-Iterator* DBWithTTLImpl::NewIterator(const ReadOptions& opts,
+Iterator* DBWithTTLImpl::NewIterator(const ReadPublicOptions& opts,
                                      ColumnFamilyHandle* column_family) {
   return new TtlIterator(db_->NewIterator(opts, column_family));
 }

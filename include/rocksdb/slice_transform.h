@@ -100,7 +100,7 @@ class SliceTransform : public Customizable {
   //   safe to use prefix bloom filter and seek to key `prefix`.
   // If this function returns true, this means a user can Seek() to a prefix
   // using the bloom filter. Otherwise, user needs to skip the bloom filter
-  // by setting ReadOptions.total_order_seek = true.
+  // by setting ReadPublicOptions.total_order_seek = true.
   //
   // Here is an example: Suppose we implement a slice transform that returns
   // the first part of the string up to and including first ",":

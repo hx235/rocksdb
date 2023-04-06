@@ -27,15 +27,15 @@ class SstFileReader {
   // Returns a new iterator over the table contents.
   // Most read options provide the same control as we read from DB.
   // If "snapshot" is nullptr, the iterator returns only the latest keys.
-  Iterator* NewIterator(const ReadOptions& options);
+  Iterator* NewIterator(const ReadPublicOptions& options);
 
   std::shared_ptr<const TableProperties> GetTableProperties() const;
 
   // Verifies whether there is corruption in this table.
-  Status VerifyChecksum(const ReadOptions& /*read_options*/);
+  Status VerifyChecksum(const ReadPublicOptions& /*read_options*/);
 
   // TODO: plumb IOActivity down
-  Status VerifyChecksum() { return VerifyChecksum(ReadOptions()); }
+  Status VerifyChecksum() { return VerifyChecksum(ReadPublicOptions()); }
 
  private:
   struct Rep;

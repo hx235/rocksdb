@@ -184,20 +184,20 @@ class WriteUnpreparedTxn : public WritePreparedTxn {
   // Get and GetIterator needs to be overridden so that a ReadCallback to
   // handle read-your-own-write is used.
   using Transaction::Get;
-  virtual Status Get(const ReadOptions& options,
+  virtual Status Get(const ReadPublicOptions& options,
                      ColumnFamilyHandle* column_family, const Slice& key,
                      PinnableSlice* value) override;
 
   using Transaction::MultiGet;
-  virtual void MultiGet(const ReadOptions& options,
+  virtual void MultiGet(const ReaPublicdOptions& options,
                         ColumnFamilyHandle* column_family,
                         const size_t num_keys, const Slice* keys,
                         PinnableSlice* values, Status* statuses,
                         const bool sorted_input = false) override;
 
   using Transaction::GetIterator;
-  virtual Iterator* GetIterator(const ReadOptions& options) override;
-  virtual Iterator* GetIterator(const ReadOptions& options,
+  virtual Iterator* GetIterator(const ReadPublicOptions& options) override;
+  virtual Iterator* GetIterator(const ReadPublicOptions& options,
                                 ColumnFamilyHandle* column_family) override;
 
   virtual Status ValidateSnapshot(ColumnFamilyHandle* column_family,
@@ -336,4 +336,3 @@ class WriteUnpreparedTxn : public WritePreparedTxn {
 };
 
 }  // namespace ROCKSDB_NAMESPACE
-
