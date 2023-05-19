@@ -6370,7 +6370,8 @@ TEST_P(TransactionTest, DoubleCrashInRecovery) {
       file_content[400] = 'h';
       file_content[401] = 'a';
       ASSERT_OK(env->DeleteFile(fname));
-      ASSERT_OK(WriteStringToFile(env.get(), file_content, fname, true));
+      ASSERT_OK(WriteStringToFile(env.get(), file_content, fname, true,
+                                  Env::IOActivity::kUnknown));
 
       // Recover from corruption
       std::vector<ColumnFamilyHandle*> handles;

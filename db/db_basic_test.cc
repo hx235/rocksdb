@@ -3106,9 +3106,11 @@ TEST_F(DBBasicTest, LastSstFileNotInManifest) {
   // Manually add a sst file.
   constexpr uint64_t kSstFileNumber = 100;
   const std::string kSstFile = MakeTableFileName(dbname_, kSstFileNumber);
-  ASSERT_OK(WriteStringToFile(env_, /* data = */ "bad sst file content",
+  ASSERT_OK(WriteStringToFile(env_,
+                              /* data = */ "bad sst file content",
                               /* fname = */ kSstFile,
-                              /* should_sync = */ true));
+                              /* should_sync = */ true,
+                              /* io_activity */ Env::IOActivity::kUnknown));
   ASSERT_OK(env_->FileExists(kSstFile));
 
   TableFileListener* listener = new TableFileListener();
@@ -3160,7 +3162,8 @@ TEST_F(DBBasicTest, RecoverWithMissingFiles) {
     ASSERT_OK(ReadFileToString(env_, files[files.size() - 1], &corrupted_data));
     ASSERT_OK(WriteStringToFile(
         env_, corrupted_data.substr(0, corrupted_data.size() - 2),
-        files[files.size() - 1], /*should_sync=*/true));
+        files[files.size() - 1], /*should_sync=*/true,
+        /*io_activity=*/Env::IOActivity::kUnknown));
     for (int j = static_cast<int>(files.size() - 2); j >= static_cast<int>(i);
          --j) {
       ASSERT_OK(env_->DeleteFile(files[j]));
@@ -3207,13 +3210,15 @@ TEST_F(DBBasicTest, BestEffortsRecoveryTryMultipleManifests) {
     // Hack by adding a new MANIFEST with high file number
     std::string garbage(10, '\0');
     ASSERT_OK(WriteStringToFile(env_, garbage, dbname_ + "/MANIFEST-001000",
-                                /*should_sync=*/true));
+                                /*should_sync=*/true,
+                                /*io_activity=*/Env::IOActivity::kUnknown));
   }
   {
     // Hack by adding a corrupted SST not referenced by any MANIFEST
     std::string garbage(10, '\0');
     ASSERT_OK(WriteStringToFile(env_, garbage, dbname_ + "/001001.sst",
-                                /*should_sync=*/true));
+                                /*should_sync=*/true,
+                                /*io_activity=*/Env::IOActivity::kUnknown));
   }
 
   options.best_efforts_recovery = true;

@@ -130,7 +130,8 @@ UniqueIdVerifier::UniqueIdVerifier(const std::string& db_name, Env* env)
 }
 
 UniqueIdVerifier::~UniqueIdVerifier() {
-  IOStatus s = data_file_writer_->Close();
+  IOStatus s;
+  s = data_file_writer_->Close(IOOptions());
   assert(s.ok());
 }
 
@@ -153,13 +154,14 @@ void UniqueIdVerifier::Verify(const std::string& id) {
   if (id_set_.size() >= 4294967) {
     return;
   }
-  IOStatus s = data_file_writer_->Append(Slice(id));
+  IOOptions opts;
+  IOStatus s = data_file_writer_->Append(opts, Slice(id));
   if (!s.ok()) {
     fprintf(stderr, "Error writing to unique id file: %s\n",
             s.ToString().c_str());
     assert(false);
   }
-  s = data_file_writer_->Flush();
+  s = data_file_writer_->Flush(opts);
   if (!s.ok()) {
     fprintf(stderr, "Error flushing unique id file: %s\n",
             s.ToString().c_str());

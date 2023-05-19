@@ -1123,6 +1123,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   // (b) CompactionFilter::Decision::kRemoveAndSkipUntil.
   read_options.total_order_seek = true;
 
+  const WriteOptions write_option(Env::IOActivity::kCompaction);
+
   // Remove the timestamps from boundaries because boundaries created in
   // GenSubcompactionBoundaries doesn't strip away the timestamp.
   size_t ts_sz = cfd->user_comparator()->timestamp_size();
@@ -1257,10 +1259,11 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
           ? new BlobFileBuilder(
                 versions_, fs_.get(),
                 sub_compact->compaction->immutable_options(),
-                mutable_cf_options, &file_options_, db_id_, db_session_id_,
-                job_id_, cfd->GetID(), cfd->GetName(), Env::IOPriority::IO_LOW,
-                write_hint_, io_tracer_, blob_callback_,
-                BlobFileCreationReason::kCompaction, &blob_file_paths,
+                mutable_cf_options, &file_options_, &write_option, db_id_,
+                db_session_id_, job_id_, cfd->GetID(), cfd->GetName(),
+                Env::IOPriority::IO_LOW, write_hint_, io_tracer_,
+                blob_callback_, BlobFileCreationReason::kCompaction,
+                &blob_file_paths,
                 sub_compact->Current().GetBlobFileAdditionsPtr())
           : nullptr);
 
@@ -1693,6 +1696,8 @@ Status CompactionJob::InstallCompactionResults(
   db_mutex_->AssertHeld();
 
   const ReadOptions read_options(Env::IOActivity::kCompaction);
+  const WriteOptions write_options(Env::IOActivity::kCompaction);
+
   auto* compaction = compact_->compaction;
   assert(compaction);
 
@@ -1770,8 +1775,8 @@ Status CompactionJob::InstallCompactionResults(
   }
 
   return versions_->LogAndApply(compaction->column_family_data(),
-                                mutable_cf_options, read_options, edit,
-                                db_mutex_, db_directory_);
+                                mutable_cf_options, read_options, write_options,
+                                edit, db_mutex_, db_directory_);
 }
 
 void CompactionJob::RecordCompactionIOStats() {
@@ -1918,12 +1923,15 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
       sub_compact->compaction->immutable_options()->listeners;
   outputs.AssignFileWriter(new WritableFileWriter(
       std::move(writable_file), fname, fo_copy, db_options_.clock, io_tracer_,
-      db_options_.stats, listeners, db_options_.file_checksum_gen_factory.get(),
+      db_options_.stats, Histograms::SST_WRITE_MICROS, listeners,
+      db_options_.file_checksum_gen_factory.get(),
       tmp_set.Contains(FileType::kTableFile), false));
 
+  const WriteOptions write_option(Env::IOActivity::kCompaction);
   TableBuilderOptions tboptions(
       *cfd->ioptions(), *(sub_compact->compaction->mutable_cf_options()),
-      cfd->internal_comparator(), cfd->int_tbl_prop_collector_factories(),
+      write_option, cfd->internal_comparator(),
+      cfd->int_tbl_prop_collector_factories(),
       sub_compact->compaction->output_compression(),
       sub_compact->compaction->output_compression_opts(), cfd->GetID(),
       cfd->GetName(), sub_compact->compaction->output_level(),

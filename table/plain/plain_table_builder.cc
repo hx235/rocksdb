@@ -40,7 +40,8 @@ IOStatus WriteBlock(const Slice& block_contents, WritableFileWriter* file,
                     uint64_t* offset, BlockHandle* block_handle) {
   block_handle->set_offset(*offset);
   block_handle->set_size(block_contents.size());
-  IOStatus io_s = file->Append(block_contents);
+  // TODO: plumb Env::IOActivity, Env::IOPriority
+  IOStatus io_s = file->Append(IOOptions(), block_contents);
 
   if (io_s.ok()) {
     *offset += block_contents.size();
@@ -136,6 +137,8 @@ void PlainTableBuilder::Add(const Slice& key, const Slice& value) {
   // temp buffer for metadata bytes between key and value.
   char meta_bytes_buf[6];
   size_t meta_bytes_buf_size = 0;
+  // TODO: plumb Env::IOActivity, Env::IOPriority
+  const IOOptions opts;
 
   ParsedInternalKey internal_key;
   if (!ParseInternalKey(key, &internal_key, false /* log_err_key */)
@@ -176,12 +179,13 @@ void PlainTableBuilder::Add(const Slice& key, const Slice& value) {
         EncodeVarint32(meta_bytes_buf + meta_bytes_buf_size, value_size);
     assert(end_ptr <= meta_bytes_buf + sizeof(meta_bytes_buf));
     meta_bytes_buf_size = end_ptr - meta_bytes_buf;
-    io_status_ = file_->Append(Slice(meta_bytes_buf, meta_bytes_buf_size));
+    io_status_ =
+        file_->Append(opts, Slice(meta_bytes_buf, meta_bytes_buf_size));
   }
 
   // Write value
   if (io_status_.ok()) {
-    io_status_ = file_->Append(value);
+    io_status_ = file_->Append(opts, value);
     offset_ += value_size + meta_bytes_buf_size;
   }
 
@@ -300,7 +304,8 @@ Status PlainTableBuilder::Finish() {
     status_ = s;
     return status_;
   }
-  io_status_ = file_->Append(footer.GetSlice());
+  // TODO: plumb Env::IOActivity, Env::IOPriority
+  io_status_ = file_->Append(IOOptions(), footer.GetSlice());
   if (io_status_.ok()) {
     offset_ += footer.GetSlice().size();
   }

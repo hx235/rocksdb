@@ -951,7 +951,8 @@ Status DBImpl::SetupDBId(bool read_only, RecoveryContext* recovery_ctx) {
   }
   // Persist it to IDENTITY file if allowed
   if (!read_only) {
-    s = SetIdentityFile(env_, dbname_, db_id_);
+    // TODO: plumb Env::IOActivity, Env::IOPriority
+    s = SetIdentityFile(WriteOptions(), env_, dbname_, db_id_);
   }
   return s;
 }

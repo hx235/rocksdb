@@ -25,6 +25,8 @@ IOStatus CopyFile(FileSystem* fs, const std::string& source,
   FileOptions soptions;
   IOStatus io_s;
   std::unique_ptr<SequentialFileReader> src_reader;
+  // TODO: plumb Env::IOActivity, Env::IOPriority
+  const IOOptions opts;
 
   {
     soptions.temperature = temperature;
@@ -36,7 +38,7 @@ IOStatus CopyFile(FileSystem* fs, const std::string& source,
 
     if (size == 0) {
       // default argument means copy everything
-      io_s = fs->GetFileSize(source, IOOptions(), &size, nullptr);
+      io_s = fs->GetFileSize(source, opts, &size, nullptr);
       if (!io_s.ok()) {
         return io_s;
       }
@@ -59,13 +61,14 @@ IOStatus CopyFile(FileSystem* fs, const std::string& source,
     if (slice.size() == 0) {
       return IOStatus::Corruption("file too small");
     }
-    io_s = dest_writer->Append(slice);
+
+    io_s = dest_writer->Append(opts, slice);
     if (!io_s.ok()) {
       return io_s;
     }
     size -= slice.size();
   }
-  return dest_writer->Sync(use_fsync);
+  return dest_writer->Sync(opts, use_fsync);
 }
 
 IOStatus CopyFile(FileSystem* fs, const std::string& source,
@@ -98,6 +101,8 @@ IOStatus CreateFile(FileSystem* fs, const std::string& destination,
   const EnvOptions soptions;
   IOStatus io_s;
   std::unique_ptr<WritableFileWriter> dest_writer;
+  // TODO: plumb Env::IOActivity, Env::IOPriority
+  const IOOptions opts;
 
   std::unique_ptr<FSWritableFile> destfile;
   io_s = fs->NewWritableFile(destination, soptions, &destfile, nullptr);
@@ -106,11 +111,11 @@ IOStatus CreateFile(FileSystem* fs, const std::string& destination,
   }
   dest_writer.reset(
       new WritableFileWriter(std::move(destfile), destination, soptions));
-  io_s = dest_writer->Append(Slice(contents));
+  io_s = dest_writer->Append(opts, Slice(contents));
   if (!io_s.ok()) {
     return io_s;
   }
-  return dest_writer->Sync(use_fsync);
+  return dest_writer->Sync(opts, use_fsync);
 }
 
 Status DeleteDBFile(const ImmutableDBOptions* db_options,

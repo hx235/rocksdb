@@ -282,6 +282,7 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {FILE_READ_FLUSH_MICROS, "rocksdb.file.read.flush.micros"},
     {FILE_READ_COMPACTION_MICROS, "rocksdb.file.read.compaction.micros"},
     {FILE_READ_DB_OPEN_MICROS, "rocksdb.file.read.db.open.micros"},
+
     {FILE_READ_GET_MICROS, "rocksdb.file.read.get.micros"},
     {FILE_READ_MULTIGET_MICROS, "rocksdb.file.read.multiget.micros"},
     {FILE_READ_DB_ITERATOR_MICROS, "rocksdb.file.read.db.iterator.micros"},
@@ -289,6 +290,10 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
      "rocksdb.file.read.verify.db.checksum.micros"},
     {FILE_READ_VERIFY_FILE_CHECKSUMS_MICROS,
      "rocksdb.file.read.verify.file.checksums.micros"},
+    {SST_WRITE_MICROS, "rocksdb.sst.write.micros"},
+    {FILE_WRITE_FLUSH_MICROS, "rocksdb.file.write.flush.micros"},
+    {FILE_WRITE_COMPACTION_MICROS, "rocksdb.file.write.compaction.micros"},
+    {FILE_WRITE_DB_OPEN_MICROS, "rocksdb.file.write.db.open.micros"},
     {NUM_SUBCOMPACTIONS_SCHEDULED, "rocksdb.num.subcompactions.scheduled"},
     {BYTES_PER_READ, "rocksdb.bytes.per.read"},
     {BYTES_PER_WRITE, "rocksdb.bytes.per.write"},

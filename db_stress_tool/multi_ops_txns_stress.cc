@@ -1218,7 +1218,11 @@ void MultiOpsTxnsStressTest::VerifyPkSkFast(const ReadOptions& read_options,
   assert(db_ == db);
   assert(db_ != nullptr);
 
+  ThreadStatus::OperationType cur_op_type =
+      ThreadStatusUtil::GetThreadOperation();
+  ThreadStatusUtil::SetThreadOperation(ThreadStatus::OperationType::OP_UNKNOWN);
   const Snapshot* const snapshot = db_->GetSnapshot();
+  ThreadStatusUtil::SetThreadOperation(cur_op_type);
   assert(snapshot);
   ManagedSnapshot snapshot_guard(db_, snapshot);
 

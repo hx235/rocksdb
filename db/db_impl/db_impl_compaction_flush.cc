@@ -142,7 +142,8 @@ IOStatus DBImpl::SyncClosedLogs(JobContext* job_context,
       if (error_handler_.IsRecoveryInProgress()) {
         log->file()->reset_seen_error();
       }
-      io_s = log->file()->Sync(immutable_db_options_.use_fsync);
+      // TODO: plumb Env::IOActivity, Env::IOPriority
+      io_s = log->file()->Sync(IOOptions(), immutable_db_options_.use_fsync);
       if (!io_s.ok()) {
         break;
       }
@@ -266,8 +267,9 @@ Status DBImpl::FlushMemTableToOutputFile(
     mutex_.Lock();
     if (log_io_s.ok() && synced_wals.IsWalAddition()) {
       const ReadOptions read_options(Env::IOActivity::kFlush);
-      log_io_s =
-          status_to_io_status(ApplyWALToManifest(read_options, &synced_wals));
+      const WriteOptions write_options(Env::IOActivity::kFlush);
+      log_io_s = status_to_io_status(
+          ApplyWALToManifest(read_options, write_options, &synced_wals));
       TEST_SYNC_POINT_CALLBACK("DBImpl::FlushMemTableToOutputFile:CommitWal:1",
                                nullptr);
     }
@@ -531,8 +533,10 @@ Status DBImpl::AtomicFlushMemTablesToOutputFiles(
     mutex_.Lock();
     if (log_io_s.ok() && synced_wals.IsWalAddition()) {
       const ReadOptions read_options(Env::IOActivity::kFlush);
-      log_io_s =
-          status_to_io_status(ApplyWALToManifest(read_options, &synced_wals));
+      const WriteOptions write_options(Env::IOActivity::kFlush);
+
+      log_io_s = status_to_io_status(
+          ApplyWALToManifest(read_options, write_options, &synced_wals));
     }
 
     if (!log_io_s.ok() && !log_io_s.IsShutdownInProgress() &&
@@ -985,8 +989,10 @@ Status DBImpl::IncreaseFullHistoryTsLowImpl(ColumnFamilyData* cfd,
   edit.SetColumnFamily(cfd->GetID());
   edit.SetFullHistoryTsLow(ts_low);
 
-  // TODO: plumb Env::IOActivity
+  // TODO: plumb Env::IOActivity, Env::IOPriority
   const ReadOptions read_options;
+  const WriteOptions write_options;
+
   TEST_SYNC_POINT_CALLBACK("DBImpl::IncreaseFullHistoryTsLowImpl:BeforeEdit",
                            &edit);
 
@@ -1000,7 +1006,7 @@ Status DBImpl::IncreaseFullHistoryTsLowImpl(ColumnFamilyData* cfd,
   }
 
   Status s = versions_->LogAndApply(cfd, *cfd->GetLatestMutableCFOptions(),
-                                    read_options, &edit, &mutex_,
+                                    read_options, write_options, &edit, &mutex_,
                                     directories_.GetDbDir());
   if (!s.ok()) {
     return s;
@@ -1685,6 +1691,7 @@ Status DBImpl::ReFitLevel(ColumnFamilyData* cfd, int level, int target_level) {
   }
 
   const ReadOptions read_options(Env::IOActivity::kCompaction);
+  const WriteOptions write_options(Env::IOActivity::kCompaction);
 
   SuperVersionContext sv_context(/* create_superversion */ true);
 
@@ -1801,9 +1808,9 @@ Status DBImpl::ReFitLevel(ColumnFamilyData* cfd, int level, int target_level) {
                     "[%s] Apply version edit:\n%s", cfd->GetName().c_str(),
                     edit.DebugString().data());
 
-    Status status =
-        versions_->LogAndApply(cfd, mutable_cf_options, read_options, &edit,
-                               &mutex_, directories_.GetDbDir());
+    Status status = versions_->LogAndApply(cfd, mutable_cf_options,
+                                           read_options, write_options, &edit,
+                                           &mutex_, directories_.GetDbDir());
 
     cfd->compaction_picker()->UnregisterCompaction(c.get());
     c.reset();
@@ -3334,6 +3341,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
   TEST_SYNC_POINT("DBImpl::BackgroundCompaction:Start");
 
   const ReadOptions read_options(Env::IOActivity::kCompaction);
+  const WriteOptions write_options(Env::IOActivity::kCompaction);
 
   bool is_manual = (manual_compaction != nullptr);
   std::unique_ptr<Compaction> c;
@@ -3547,7 +3555,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     }
     status = versions_->LogAndApply(
         c->column_family_data(), *c->mutable_cf_options(), read_options,
-        c->edit(), &mutex_, directories_.GetDbDir());
+        write_options, c->edit(), &mutex_, directories_.GetDbDir());
     io_s = versions_->io_status();
     InstallSuperVersionAndScheduleWork(c->column_family_data(),
                                        &job_context->superversion_contexts[0],
@@ -3613,7 +3621,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     }
     status = versions_->LogAndApply(
         c->column_family_data(), *c->mutable_cf_options(), read_options,
-        c->edit(), &mutex_, directories_.GetDbDir());
+        write_options, c->edit(), &mutex_, directories_.GetDbDir());
     io_s = versions_->io_status();
     // Use latest MutableCFOptions
     InstallSuperVersionAndScheduleWork(c->column_family_data(),

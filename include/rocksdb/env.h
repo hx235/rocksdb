@@ -1348,9 +1348,10 @@ extern void Fatal(Logger* info_log, const char* format, ...)
     ROCKSDB_PRINTF_FORMAT_ATTR(2, 3);
 
 // A utility routine: write "data" to the named file.
-extern Status WriteStringToFile(Env* env, const Slice& data,
-                                const std::string& fname,
-                                bool should_sync = false);
+extern Status WriteStringToFile(
+    Env* env, const Slice& data, const std::string& fname,
+    bool should_sync = false,
+    Env::IOActivity io_activity = Env::IOActivity::kUnknown);
 
 // A utility routine: read contents of named file into *data
 extern Status ReadFileToString(Env* env, const std::string& fname,

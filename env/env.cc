@@ -1051,9 +1051,11 @@ void Log(const std::shared_ptr<Logger>& info_log, const char* format, ...) {
 }
 
 Status WriteStringToFile(Env* env, const Slice& data, const std::string& fname,
-                         bool should_sync) {
+                         bool should_sync, Env::IOActivity io_activity) {
   const auto& fs = env->GetFileSystem();
-  return WriteStringToFile(fs.get(), data, fname, should_sync);
+  IOOptions opts;
+  opts.io_activity = io_activity;
+  return WriteStringToFile(fs.get(), data, fname, should_sync, opts);
 }
 
 Status ReadFileToString(Env* env, const std::string& fname, std::string* data) {

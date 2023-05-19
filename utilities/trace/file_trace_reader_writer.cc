@@ -96,7 +96,8 @@ Status FileTraceWriter::Close() {
 }
 
 Status FileTraceWriter::Write(const Slice& data) {
-  return file_writer_->Append(data);
+  // TODO: plumb Env::IOActivity, Env::IOPriority
+  return file_writer_->Append(IOOptions(), data);
 }
 
 uint64_t FileTraceWriter::GetFileSize() { return file_writer_->GetFileSize(); }
