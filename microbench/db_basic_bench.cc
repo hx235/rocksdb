@@ -538,6 +538,135 @@ static void ManualFlushArguments(benchmark::internal::Benchmark* b) {
 
 BENCHMARK(ManualFlush)->Iterations(1)->Apply(ManualFlushArguments);
 
+// static void DBGet(benchmark::State& state) {
+//   auto compaction_style = static_cast<CompactionStyle>(state.range(0));
+//   uint64_t max_data = state.range(1);
+//   uint64_t per_key_size = state.range(2);
+//   bool enable_statistics = state.range(3);
+//   bool negative_query = state.range(4);
+//   bool enable_filter = state.range(5);
+//   bool mmap = state.range(6);
+//   uint64_t key_num = max_data / per_key_size;
+
+//   // setup DB
+//   static std::unique_ptr<DB> db;
+//   Options options;
+//   if (enable_statistics) {
+//     options.statistics = CreateDBStatistics();
+//   }
+//   if (mmap) {
+//     options.allow_mmap_reads = true;
+//     options.compression = kNoCompression;
+//   }
+//   options.compaction_style = compaction_style;
+
+//   BlockBasedTableOptions table_options;
+//   if (enable_filter) {
+//     table_options.filter_policy.reset(NewBloomFilterPolicy(10, false));
+//   }
+//   if (mmap) {
+//     table_options.no_block_cache = true;
+//     table_options.block_restart_interval = 1;
+//   }
+//   options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+//   auto rnd = Random(301 + state.thread_index());
+
+//   if (state.thread_index() == 0) {
+//     KeyGenerator kg_seq(key_num /* max_key */);
+//     SetupDB(state, options, &db, "DBGet");
+
+//     // Load all valid keys into DB. That way, iterations in `!negative_query`
+//     // runs can always find the key even though it is generated from a random
+//     // number.
+//     auto wo = WriteOptions();
+//     wo.disableWAL = true;
+//     for (uint64_t i = 0; i < key_num; i++) {
+//       Status s = db->Put(wo, kg_seq.Next(),
+//                          rnd.RandomString(static_cast<int>(per_key_size)));
+//       if (!s.ok()) {
+//         state.SkipWithError(s.ToString().c_str());
+//       }
+//     }
+
+//     // Compact whole DB into one level, so each iteration will consider the
+//     same
+//     // number of files (one).
+//     Status s = db->CompactRange(CompactRangeOptions(), nullptr /* begin */,
+//                                 nullptr /* end */);
+//     if (!s.ok()) {
+//       state.SkipWithError(s.ToString().c_str());
+//     }
+//   }
+
+//   KeyGenerator kg_rnd(&rnd, key_num /* max_key */);
+//   auto ro = ReadOptions();
+//   if (mmap) {
+//     ro.verify_checksums = false;
+//   }
+//   size_t not_found = 0;
+//   if (negative_query) {
+//     for (auto _ : state) {
+//       std::string val;
+//       Status s = db->Get(ro, kg_rnd.NextNonExist(), &val);
+//       if (s.IsNotFound()) {
+//         not_found++;
+//       }
+//     }
+//   } else {
+//     for (auto _ : state) {
+//       std::string val;
+//       Status s = db->Get(ro, kg_rnd.Next(), &val);
+//       if (s.IsNotFound()) {
+//         not_found++;
+//       }
+//     }
+//   }
+
+//   state.counters["neg_qu_pct"] = benchmark::Counter(
+//       static_cast<double>(not_found * 100),
+//       benchmark::Counter::kAvgIterations);
+
+//   if (state.thread_index() == 0) {
+//     if (enable_statistics) {
+//       HistogramData histogram_data;
+//       options.statistics->histogramData(DB_GET, &histogram_data);
+//       state.counters["get_mean"] = histogram_data.average * std::milli::den;
+//       state.counters["get_p95"] = histogram_data.percentile95 *
+//       std::milli::den; state.counters["get_p99"] =
+//       histogram_data.percentile99 * std::milli::den;
+//     }
+
+//     TeardownDB(state, db, options, kg_rnd);
+//   }
+// }
+
+// static void DBGetArguments(benchmark::internal::Benchmark* b) {
+//   for (int comp_style : {kCompactionStyleLevel, kCompactionStyleUniversal,
+//                          kCompactionStyleFIFO}) {
+//     for (int64_t max_data : {128l << 20, 512l << 20}) {
+//       for (int64_t per_key_size : {256, 1024}) {
+//         for (bool enable_statistics : {false, true}) {
+//           for (bool negative_query : {false, true}) {
+//             for (bool enable_filter : {false, true}) {
+//               for (bool mmap : {false, true}) {
+//                 b->Args({comp_style, max_data, per_key_size,
+//                 enable_statistics,
+//                          negative_query, enable_filter, mmap});
+//               }
+//             }
+//           }
+//         }
+//       }
+//     }
+//   }
+//   b->ArgNames({"comp_style", "max_data", "per_key_size", "enable_statistics",
+//                "negative_query", "enable_filter", "mmap"});
+// }
+
+// BENCHMARK(DBGet)->Threads(1)->Apply(DBGetArguments);
+// BENCHMARK(DBGet)->Threads(8)->Apply(DBGetArguments);
+
 static void DBGet(benchmark::State& state) {
   auto compaction_style = static_cast<CompactionStyle>(state.range(0));
   uint64_t max_data = state.range(1);
@@ -606,18 +735,32 @@ static void DBGet(benchmark::State& state) {
   size_t not_found = 0;
   if (negative_query) {
     for (auto _ : state) {
-      std::string val;
-      Status s = db->Get(ro, kg_rnd.NextNonExist(), &val);
-      if (s.IsNotFound()) {
-        not_found++;
+      std::vector<Slice> keys;
+      keys.push_back(kg_rnd.Next());
+      keys.push_back(kg_rnd.Next());
+      std::vector<PinnableSlice> values(2);
+      std::vector<Status> statuses(2);
+      db->MultiGet(ro, db->DefaultColumnFamily(), 2, keys.data(), values.data(),
+                   statuses.data());
+      for (auto& s : statuses) {
+        if (s.IsNotFound()) {
+          not_found++;
+        }
       }
     }
   } else {
     for (auto _ : state) {
-      std::string val;
-      Status s = db->Get(ro, kg_rnd.Next(), &val);
-      if (s.IsNotFound()) {
-        not_found++;
+      std::vector<Slice> keys;
+      keys.push_back(kg_rnd.Next());
+      keys.push_back(kg_rnd.Next());
+      std::vector<PinnableSlice> values(2);
+      std::vector<Status> statuses(2);
+      db->MultiGet(ro, db->DefaultColumnFamily(), 2, keys.data(), values.data(),
+                   statuses.data());
+      for (auto& s : statuses) {
+        if (s.IsNotFound()) {
+          not_found++;
+        }
       }
     }
   }

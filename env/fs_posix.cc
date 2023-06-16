@@ -1184,11 +1184,12 @@ class PosixFileSystem : public FileSystem {
   }
 
   bool use_async_io() override {
-#if defined(ROCKSDB_IOURING_PRESENT)
-    return IsIOUringEnabled();
-#else
-    return false;
-#endif
+    // #if defined(ROCKSDB_IOURING_PRESENT)
+    //     return IsIOUringEnabled();
+    // #else
+    //     return false;
+    // #endif
+    return true;
   }
 
 #if defined(ROCKSDB_IOURING_PRESENT)
