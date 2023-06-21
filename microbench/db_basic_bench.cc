@@ -1174,12 +1174,20 @@ static void IteratorNext(benchmark::State& state) {
   uint64_t max_data = state.range(1);
   uint64_t per_key_size = state.range(2);
   uint64_t key_num = max_data / per_key_size;
+  bool enable_statistics = state.range(3);
+  bool async_io = state.range(4);
+  bool include_detailed_timers = state.range(5);
 
   // setup DB
   static std::unique_ptr<DB> db;
   Options options;
   options.compaction_style = compaction_style;
-
+  if (enable_statistics) {
+    options.statistics = CreateDBStatistics();
+    if (include_detailed_timers) {
+      options.statistics->set_stats_level(StatsLevel::kExceptTimeForMutex);
+    }
+  }
   auto rnd = Random(301 + state.thread_index());
   KeyGenerator kg(&rnd, key_num);
 
@@ -1210,11 +1218,13 @@ static void IteratorNext(benchmark::State& state) {
     }
   }
 
+  ReadOptions ro;
+  ro.async_io = async_io;
   for (auto _ : state) {
     std::unique_ptr<Iterator> iter{nullptr};
     state.PauseTiming();
     if (!iter) {
-      iter.reset(db->NewIterator(ReadOptions()));
+      iter.reset(db->NewIterator(ro));
     }
     while (!iter->Valid()) {
       iter->Seek(kg.Next());
@@ -1236,11 +1246,19 @@ static void IteratorNextArguments(benchmark::internal::Benchmark* b) {
                          kCompactionStyleFIFO}) {
     for (int64_t max_data : {128l << 20, 512l << 20}) {
       for (int64_t per_key_size : {256, 1024}) {
-        b->Args({comp_style, max_data, per_key_size});
+        for (bool enable_statistics : {false, true}) {
+          for (bool async_io : {false, true}) {
+            for (bool include_detailed_timers : {false, true}) {
+              b->Args({comp_style, max_data, per_key_size, enable_statistics,
+                       async_io, include_detailed_timers});
+            }
+          }
+        }
       }
     }
   }
-  b->ArgNames({"comp_style", "max_data", "per_key_size"});
+  b->ArgNames({"comp_style", "max_data", "per_key_size", "enable_statistics",
+               "async_io", "include_detailed_timers"});
 }
 static constexpr uint64_t kIteratorNextNum = 10l << 10;
 BENCHMARK(IteratorNext)
