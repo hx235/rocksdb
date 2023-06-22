@@ -796,11 +796,12 @@ static void SimpleGetWithPerfContext(benchmark::State& state) {
 BENCHMARK(SimpleGetWithPerfContext)->Iterations(1000000);
 
 static void DBMultiGet(benchmark::State& state) {
-  const int kMaxQueryKeyNum = 64;
+  // const int kMaxQueryKeyNum = 64;
   auto compaction_style = static_cast<CompactionStyle>(state.range(0));
   uint64_t max_data = state.range(1);
   uint64_t per_key_size = state.range(2);
   uint64_t key_num = max_data / per_key_size;
+  uint64_t query_key_num = key_num / 10000;
   bool enable_statistics = state.range(3);
   bool negative_query = state.range(4);
   bool enable_filter = state.range(5);
@@ -868,9 +869,9 @@ static void DBMultiGet(benchmark::State& state) {
   size_t not_found = 0;
   if (negative_query) {
     for (auto _ : state) {
-      int query_key_num = rnd.Uniform(kMaxQueryKeyNum) + 1;
+      // int query_key_num = rnd.Uniform(kMaxQueryKeyNum) + 1;
       std::vector<Slice> keys;
-      for (int i = 0; i < query_key_num; ++i) {
+      for (uint64_t i = 0; i < query_key_num; ++i) {
         keys.push_back(kg_rnd.NextNonExist());
       }
       std::vector<PinnableSlice> values(query_key_num);
@@ -887,9 +888,9 @@ static void DBMultiGet(benchmark::State& state) {
     }
   } else {
     for (auto _ : state) {
-      int query_key_num = rnd.Uniform(kMaxQueryKeyNum) + 1;
+      // int query_key_num = rnd.Uniform(kMaxQueryKeyNum) + 1;
       std::vector<Slice> keys;
-      for (int i = 0; i < query_key_num; ++i) {
+      for (uint64_t i = 0; i < query_key_num; ++i) {
         keys.push_back(kg_rnd.Next());
       }
       std::vector<PinnableSlice> values(query_key_num);
