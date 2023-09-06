@@ -217,8 +217,7 @@ Status BlobFileBuilder::OpenBlobFileIfNeeded() {
   std::unique_ptr<WritableFileWriter> file_writer(new WritableFileWriter(
       std::move(file), blob_file_paths_->back(), *file_options_,
       immutable_options_->clock, io_tracer_, statistics,
-      // TODO: pass the correct Histogram for BLOB file writer
-      Histograms::HISTOGRAM_ENUM_MAX, immutable_options_->listeners,
+      Histograms::BLOB_WRITE_MICROS, immutable_options_->listeners,
       immutable_options_->file_checksum_gen_factory.get(),
       tmp_set.Contains(FileType::kBlobFile), false));
 

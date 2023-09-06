@@ -1546,7 +1546,8 @@ class DBImpl : public DB {
   virtual bool OwnTablesAndLogs() const { return true; }
 
   // Setup DB identity file, and write DB ID to manifest if necessary.
-  Status SetupDBId(bool read_only, RecoveryContext* recovery_ctx);
+  Status SetupDBId(const WriteOptions& write_options, bool read_only,
+                   RecoveryContext* recovery_ctx);
   // Assign db_id_ and write DB ID to manifest if necessary.
   void SetDBId(std::string&& id, bool read_only, RecoveryContext* recovery_ctx);
 
@@ -1874,7 +1875,8 @@ class DBImpl : public DB {
   void ReleaseFileNumberFromPendingOutputs(
       std::unique_ptr<std::list<uint64_t>::iterator>& v);
 
-  IOStatus SyncClosedLogs(JobContext* job_context, VersionEdit* synced_wals);
+  IOStatus SyncClosedLogs(const WriteOptions& write_options,
+                          JobContext* job_context, VersionEdit* synced_wals);
 
   // Flush the in-memory write buffer to storage.  Switches to a new
   // log-file/memtable and writes a new descriptor iff successful. Then

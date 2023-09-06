@@ -174,6 +174,7 @@ extern Status SetIdentityFile(const WriteOptions& write_options, Env* env,
 
 // Sync manifest file `file`.
 extern IOStatus SyncManifest(const ImmutableDBOptions* db_options,
+                             const WriteOptions& write_options,
                              WritableFileWriter* file);
 
 // Return list of file names of info logs in `file_names`.

@@ -38,12 +38,16 @@ Writer::Writer(std::unique_ptr<WritableFileWriter>&& dest, uint64_t log_number,
 }
 
 Writer::~Writer() {
+  ThreadStatus::OperationType cur_op_type =
+      ThreadStatusUtil::GetThreadOperation();
+  ThreadStatusUtil::SetThreadOperation(ThreadStatus::OperationType::OP_UNKNOWN);
   if (dest_) {
     WriteBuffer(WriteOptions()).PermitUncheckedError();
   }
   if (compress_) {
     delete compress_;
   }
+  ThreadStatusUtil::SetThreadOperation(cur_op_type);
 }
 
 IOStatus Writer::WriteBuffer(const WriteOptions& write_options) {

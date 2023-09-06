@@ -373,10 +373,15 @@ Status MultiOpsTxnsStressTest::TestGet(
     ThreadState* thread, const ReadOptions& read_opts,
     const std::vector<int>& /*rand_column_families*/,
     const std::vector<int64_t>& /*rand_keys*/) {
+  ThreadStatus::OperationType cur_op_type =
+      ThreadStatusUtil::GetThreadOperation();
+  ThreadStatusUtil::SetThreadOperation(ThreadStatus::OperationType::OP_UNKNOWN);
   uint32_t a = 0;
   uint32_t pos = 0;
   std::tie(a, pos) = ChooseExistingA(thread);
-  return PointLookupTxn(thread, read_opts, a);
+  Status s = PointLookupTxn(thread, read_opts, a);
+  ThreadStatusUtil::SetThreadOperation(cur_op_type);
+  return s;
 }
 
 // Not used.
@@ -416,10 +421,15 @@ Status MultiOpsTxnsStressTest::TestIterate(
     ThreadState* thread, const ReadOptions& read_opts,
     const std::vector<int>& /*rand_column_families*/,
     const std::vector<int64_t>& /*rand_keys*/) {
+  ThreadStatus::OperationType cur_op_type =
+      ThreadStatusUtil::GetThreadOperation();
+  ThreadStatusUtil::SetThreadOperation(ThreadStatus::OperationType::OP_UNKNOWN);
   uint32_t c = 0;
   uint32_t pos = 0;
   std::tie(c, pos) = ChooseExistingC(thread);
-  return RangeScanTxn(thread, read_opts, c);
+  Status s = RangeScanTxn(thread, read_opts, c);
+  ThreadStatusUtil::SetThreadOperation(cur_op_type);
+  return s;
 }
 
 // Not intended for use.

@@ -21,6 +21,7 @@
 #include "monitoring/persistent_stats_history.h"
 #include "monitoring/thread_status_util.h"
 #include "options/options_helper.h"
+#include "rocksdb/options.h"
 #include "rocksdb/table.h"
 #include "rocksdb/wal_filter.h"
 #include "test_util/sync_point.h"
@@ -296,8 +297,8 @@ Status DBImpl::ValidateOptions(const DBOptions& db_options) {
 
 Status DBImpl::NewDB(std::vector<std::string>* new_filenames) {
   VersionEdit new_db;
-  Status s =
-      SetIdentityFile(WriteOptions(Env::IOActivity::kDBOpen), env_, dbname_);
+  const WriteOptions write_options(Env::IOActivity::kDBOpen);
+  Status s = SetIdentityFile(write_options, env_, dbname_);
   if (!s.ok()) {
     return s;
   }
@@ -312,7 +313,6 @@ Status DBImpl::NewDB(std::vector<std::string>* new_filenames) {
 
   ROCKS_LOG_INFO(immutable_db_options_.info_log, "Creating manifest 1 \n");
   const std::string manifest = DescriptorFileName(dbname_, 1);
-  const WriteOptions write_options(Env::IOActivity::kDBOpen);
   {
     if (fs_->FileExists(manifest, IOOptions(), nullptr).ok()) {
       fs_->DeleteFile(manifest, IOOptions(), nullptr).PermitUncheckedError();
@@ -338,7 +338,7 @@ Status DBImpl::NewDB(std::vector<std::string>* new_filenames) {
     new_db.EncodeTo(&record);
     s = log.AddRecord(write_options, record);
     if (s.ok()) {
-      s = SyncManifest(&immutable_db_options_, log.file());
+      s = SyncManifest(&immutable_db_options_, write_options, log.file());
     }
   }
   if (s.ok()) {
@@ -410,6 +410,7 @@ Status DBImpl::Recover(
     uint64_t* recovered_seq, RecoveryContext* recovery_ctx) {
   mutex_.AssertHeld();
 
+  const WriteOptions write_options(Env::IOActivity::kDBOpen);
   bool is_new_db = false;
   assert(db_lock_ == nullptr);
   std::vector<std::string> files_in_dbname;
@@ -633,7 +634,7 @@ Status DBImpl::Recover(
       }
     }
   }
-  s = SetupDBId(read_only, recovery_ctx);
+  s = SetupDBId(write_options, read_only, recovery_ctx);
   ROCKS_LOG_INFO(immutable_db_options_.info_log, "DB ID: %s\n", db_id_.c_str());
   if (s.ok() && !read_only) {
     s = DeleteUnreferencedSstFiles(recovery_ctx);

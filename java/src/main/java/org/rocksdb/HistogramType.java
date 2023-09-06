@@ -187,11 +187,13 @@ public enum HistogramType {
 
   SST_WRITE_MICROS((byte) 0x42),
 
-  FILE_WRITE_FLUSH_MICROS((byte) 0x43),
+  BLOB_WRITE_MICROS((byte) 0x43),
 
-  FILE_WRITE_COMPACTION_MICROS((byte) 0x44),
+  FILE_WRITE_FLUSH_MICROS((byte) 0x44),
 
-  FILE_WRITE_DB_OPEN_MICROS((byte) 0x45),
+  FILE_WRITE_COMPACTION_MICROS((byte) 0x45),
+
+  FILE_WRITE_DB_OPEN_MICROS((byte) 0x46),
 
   // 0x1F for backwards compatibility on current minor version.
   HISTOGRAM_ENUM_MAX((byte) 0x1F);

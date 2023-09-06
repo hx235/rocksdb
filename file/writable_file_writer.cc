@@ -28,7 +28,7 @@ namespace ROCKSDB_NAMESPACE {
 inline Histograms GetFileWriteHistograms(Histograms file_writer_hist,
                                          Env::IOActivity io_activity) {
   if (file_writer_hist == Histograms::SST_WRITE_MICROS ||
-      file_writer_hist == Histograms::BLOB_DB_BLOB_FILE_WRITE_MICROS) {
+      file_writer_hist == Histograms::BLOB_WRITE_MICROS) {
     switch (io_activity) {
       case Env::IOActivity::kFlush:
         return Histograms::FILE_WRITE_FLUSH_MICROS;

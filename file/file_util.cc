@@ -87,6 +87,7 @@ IOStatus CopyFile(FileSystem* fs, const std::string& source,
       return io_s;
     }
 
+    // TODO: pass in Histograms if the destination file is sst or blob
     dest_writer.reset(
         new WritableFileWriter(std::move(destfile), destination, options));
   }
@@ -109,6 +110,7 @@ IOStatus CreateFile(FileSystem* fs, const std::string& destination,
   if (!io_s.ok()) {
     return io_s;
   }
+  // TODO: pass in Histograms if the destination file is sst or blob
   dest_writer.reset(
       new WritableFileWriter(std::move(destfile), destination, soptions));
   io_s = dest_writer->Append(opts, Slice(contents));

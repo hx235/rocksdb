@@ -17,6 +17,7 @@
 #include "file/file_util.h"
 #include "file/writable_file_writer.h"
 #include "rocksdb/env.h"
+#include "rocksdb/file_system.h"
 #include "test_util/sync_point.h"
 #include "util/stop_watch.h"
 #include "util/string_util.h"
@@ -469,11 +470,16 @@ Status SetIdentityFile(const WriteOptions& write_options, Env* env,
 }
 
 IOStatus SyncManifest(const ImmutableDBOptions* db_options,
+                      const WriteOptions& write_options,
                       WritableFileWriter* file) {
   TEST_KILL_RANDOM_WITH_WEIGHT("SyncManifest:0", REDUCE_ODDS2);
   StopWatch sw(db_options->clock, db_options->stats, MANIFEST_FILE_SYNC_MICROS);
-  // TODO: plumb Env::IOActivity, Env::IOPriority
-  return file->Sync(IOOptions(), db_options->use_fsync);
+  IOOptions io_options;
+  IOStatus s = PrepareIOFromWriteOptions(write_options, io_options);
+  if (!s.ok()) {
+    return s;
+  }
+  return file->Sync(io_options, db_options->use_fsync);
 }
 
 Status GetInfoLogFiles(const std::shared_ptr<FileSystem>& fs,

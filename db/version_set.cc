@@ -5484,7 +5484,8 @@ Status VersionSet::ProcessManifestWrites(
       }
 
       if (s.ok()) {
-        io_s = SyncManifest(db_options_, descriptor_log_->file());
+        io_s =
+            SyncManifest(db_options_, write_options, descriptor_log_->file());
         manifest_io_status = io_s;
         TEST_SYNC_POINT_CALLBACK(
             "VersionSet::ProcessManifestWrites:AfterSyncManifest", &io_s);

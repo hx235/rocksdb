@@ -5644,12 +5644,14 @@ class HistogramTypeJni {
         return 0x41;
       case ROCKSDB_NAMESPACE::Histograms::SST_WRITE_MICROS:
         return 0x42;
-      case ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_FLUSH_MICROS:
+      case ROCKSDB_NAMESPACE::Histograms::BLOB_WRITE_MICROS:
         return 0x43;
-      case ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_COMPACTION_MICROS:
+      case ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_FLUSH_MICROS:
         return 0x44;
-      case ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_DB_OPEN_MICROS:
+      case ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_COMPACTION_MICROS:
         return 0x45;
+      case ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_DB_OPEN_MICROS:
+        return 0x46;
       case ROCKSDB_NAMESPACE::Histograms::HISTOGRAM_ENUM_MAX:
         // 0x1F for backwards compatibility on current minor version.
         return 0x1F;
@@ -5789,10 +5791,12 @@ class HistogramTypeJni {
       case 0x42:
         return ROCKSDB_NAMESPACE::Histograms::SST_WRITE_MICROS;
       case 0x43:
-        return ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_FLUSH_MICROS;
+        return ROCKSDB_NAMESPACE::Histograms::BLOB_WRITE_MICROS;
       case 0x44:
-        return ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_COMPACTION_MICROS;
+        return ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_FLUSH_MICROS;
       case 0x45:
+        return ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_COMPACTION_MICROS;
+      case 0x46:
         return ROCKSDB_NAMESPACE::Histograms::FILE_WRITE_DB_OPEN_MICROS;
       case 0x1F:
         // 0x1F for backwards compatibility on current minor version.

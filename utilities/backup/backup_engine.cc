@@ -2195,6 +2195,7 @@ IOStatus BackupEngineImpl::CopyOrCreateFile(
       rate_limiter ? static_cast<size_t>(rate_limiter->GetSingleBurstBytes())
                    : kDefaultCopyFileBufferSize;
 
+  // TODO: pass in Histograms if the destination file is sst or blob
   std::unique_ptr<WritableFileWriter> dest_writer(
       new WritableFileWriter(std::move(dst_file), dst, dst_file_options));
   std::unique_ptr<SequentialFileReader> src_reader;

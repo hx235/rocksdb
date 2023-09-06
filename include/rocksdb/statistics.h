@@ -569,6 +569,8 @@ enum Histograms : uint32_t {
 
   // Time spent in writing block-based or plain SST table
   SST_WRITE_MICROS,
+  // Time spent in writing blob file
+  BLOB_WRITE_MICROS,
   // Time spent in writing SST table (currently only block-based table) or blob
   // file for flush, compaction or db open
   FILE_WRITE_FLUSH_MICROS,

@@ -918,7 +918,8 @@ void DBImpl::SetDBId(std::string&& id, bool read_only,
   }
 }
 
-Status DBImpl::SetupDBId(bool read_only, RecoveryContext* recovery_ctx) {
+Status DBImpl::SetupDBId(const WriteOptions& write_options, bool read_only,
+                         RecoveryContext* recovery_ctx) {
   Status s;
   // Check for the IDENTITY file and create it if not there or
   // broken or not matching manifest
@@ -951,8 +952,7 @@ Status DBImpl::SetupDBId(bool read_only, RecoveryContext* recovery_ctx) {
   }
   // Persist it to IDENTITY file if allowed
   if (!read_only) {
-    // TODO: plumb Env::IOActivity, Env::IOPriority
-    s = SetIdentityFile(WriteOptions(), env_, dbname_, db_id_);
+    s = SetIdentityFile(write_options, env_, dbname_, db_id_);
   }
   return s;
 }
