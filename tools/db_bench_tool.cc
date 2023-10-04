@@ -2819,7 +2819,7 @@ class Benchmark {
               options.memtable_factory->GetId().c_str());
     }
     fprintf(stdout, "Perf Level: %d\n", FLAGS_perf_level);
-
+    fprintf(stdout, "Rate limiter rate per sec: %" PRId64 "\n", options.rate_limiter ? options.rate_limiter->GetBytesPerSecond() : -1);
     PrintWarnings(compression.c_str());
     fprintf(stdout, "------------------------------------------------\n");
   }
@@ -3811,6 +3811,19 @@ class Benchmark {
     if (FLAGS_statistics) {
       fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
     }
+
+    if(open_options_.rate_limiter) {
+      fprintf(stdout, "Rate limiter go-through bytes TOTAL: %ld \n", open_options_.rate_limiter->GetTotalBytesThrough());
+      fprintf(stdout, "Rate limiter go-through bytes USER: %ld \n", open_options_.rate_limiter->GetTotalBytesThrough(Env::IO_USER));
+      fprintf(stdout, "Rate limiter go-through bytes HIGH: %ld \n", open_options_.rate_limiter->GetTotalBytesThrough(Env::IO_HIGH));
+      fprintf(stdout, "Rate limiter go-through bytes MID: %ld \n", open_options_.rate_limiter->GetTotalBytesThrough(Env::IO_MID));
+      fprintf(stdout, "Rate limiter go-through bytes LOW: %ld \n", open_options_.rate_limiter->GetTotalBytesThrough(Env::IO_LOW));
+    }
+
+
+
+
+
     if (FLAGS_simcache_size >= 0) {
       fprintf(
           stdout, "SIMULATOR CACHE STATISTICS:\n%s\n",
