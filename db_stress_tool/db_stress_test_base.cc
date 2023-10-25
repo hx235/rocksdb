@@ -640,6 +640,7 @@ void StressTest::PreloadDbAndReopenAsReadOnly(int64_t number_of_keys,
 }
 
 Status StressTest::SetOptions(ThreadState* thread) {
+  MutexLock l(thread->shared->GetMutex());
   assert(FLAGS_set_options_one_in > 0);
   std::unordered_map<std::string, std::string> opts;
   std::string name =
@@ -1784,15 +1785,21 @@ Status StressTest::TestBackupRestore(
     if (inplace_not_restore) {
       BackupInfo& info = backup_info[thread->rand.Uniform(count)];
       restore_options.env = info.env_for_open.get();
-      s = DB::OpenForReadOnly(DBOptions(restore_options), info.name_for_open,
-                              cf_descriptors, &restored_cf_handles,
-                              &restored_db);
+      {
+        MutexLock l(thread->shared->GetMutex());
+        s = DB::OpenForReadOnly(DBOptions(restore_options), info.name_for_open,
+                                cf_descriptors, &restored_cf_handles,
+                                &restored_db);
+      }
       if (!s.ok()) {
         from = "DB::OpenForReadOnly in backup/restore";
       }
     } else {
-      s = DB::Open(DBOptions(restore_options), restore_dir, cf_descriptors,
-                   &restored_cf_handles, &restored_db);
+      {
+        MutexLock l(thread->shared->GetMutex());
+        s = DB::Open(DBOptions(restore_options), restore_dir, cf_descriptors,
+                     &restored_cf_handles, &restored_db);
+      }
       if (!s.ok()) {
         from = "DB::Open in backup/restore";
       }
