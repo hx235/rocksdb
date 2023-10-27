@@ -7,15 +7,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+#include <iostream>
 #include <memory>
 
 #include "db/db_test_util.h"
 #include "file/sst_file_manager_impl.h"
 #include "port/stack_trace.h"
 #include "rocksdb/io_status.h"
+#include "rocksdb/options.h"
 #include "rocksdb/sst_file_manager.h"
 #include "test_util/sync_point.h"
 #include "test_util/testharness.h"
+#include "tools/ldb_cmd_impl.h"
 #include "util/random.h"
 #include "utilities/fault_injection_env.h"
 #include "utilities/fault_injection_fs.h"
@@ -61,8 +64,7 @@ class ErrorHandlerFSListener : public EventListener {
         recovery_complete_(false),
         file_creation_started_(false),
         override_bg_error_(false),
-        file_count_(0),
-        fault_fs_(nullptr) {}
+        file_count_(0) {}
   ~ErrorHandlerFSListener() {
     file_creation_error_.PermitUncheckedError();
     bg_error_.PermitUncheckedError();
@@ -71,15 +73,15 @@ class ErrorHandlerFSListener : public EventListener {
 
   void OnTableFileCreationStarted(
       const TableFileCreationBriefInfo& /*ti*/) override {
-    InstrumentedMutexLock l(&mutex_);
-    file_creation_started_ = true;
-    if (file_count_ > 0) {
-      if (--file_count_ == 0) {
-        fault_fs_->SetFilesystemActive(false, file_creation_error_);
-        file_creation_error_ = IOStatus::OK();
-      }
-    }
-    cv_.SignalAll();
+    // InstrumentedMutexLock l(&mutex_);
+    // file_creation_started_ = true;
+    // if (file_count_ > 0) {
+    //   if (--file_count_ == 0) {
+    //     fault_fs_->SetFilesystemActive(false, file_creation_error_);
+    //     file_creation_error_ = IOStatus::OK();
+    //   }
+    // }
+    // cv_.SignalAll();
   }
 
   void OnErrorRecoveryBegin(BackgroundErrorReason /*reason*/, Status bg_error,
@@ -90,8 +92,19 @@ class ErrorHandlerFSListener : public EventListener {
     }
   }
 
+  void OnErrorRecoveryCompleted(Status /* old_bg_error */) override {
+    if (special_count_ == 2) {
+      time_to_second_flush_ = true;
+      while (!second_flush_started_) {
+        cv_.TimedWait(1000);
+      }
+      sleep(5);
+    }
+    special_count_++;
+  }
+
   void OnErrorRecoveryEnd(const BackgroundErrorRecoveryInfo& info) override {
-    InstrumentedMutexLock l(&mutex_);
+    // InstrumentedMutexLock l(&mutex_);
     recovery_complete_ = true;
     cv_.SignalAll();
     new_bg_error_ = info.new_bg_error;
@@ -110,15 +123,17 @@ class ErrorHandlerFSListener : public EventListener {
   }
 
   void WaitForTableFileCreationStarted(uint64_t /*abs_time_us*/) {
-    InstrumentedMutexLock l(&mutex_);
-    while (!file_creation_started_) {
-      cv_.Wait(/*abs_time_us*/);
-    }
-    file_creation_started_ = false;
+    // InstrumentedMutexLock l(&mutex_);
+    // while (!file_creation_started_) {
+    //   cv_.Wait(/*abs_time_us*/);
+    // }
+    // file_creation_started_ = false;
   }
 
   void OnBackgroundError(BackgroundErrorReason /*reason*/,
                          Status* bg_error) override {
+    should_inject_flush_error_ = false;
+    fault_fs_->SetFileSystemIOError(IOStatus::OK());
     if (override_bg_error_) {
       *bg_error = bg_error_;
       override_bg_error_ = false;
@@ -141,6 +156,20 @@ class ErrorHandlerFSListener : public EventListener {
 
   Status new_bg_error() { return new_bg_error_; }
 
+  void OnFlushBegin(DB* /* db */, const FlushJobInfo& /* info */) override {
+    if (should_inject_flush_error_) {
+      IOStatus st = IOStatus::IOError("Injected");
+      st.SetRetryable(true);
+      // fault_fs_->SetFilesystemActive(false, st);
+      fault_fs_->SetFileSystemIOError(st);
+    }
+  }
+
+  std::atomic<bool> time_to_second_flush_ = false;
+  std::atomic<bool> second_flush_started_ = false;
+  bool should_inject_flush_error_ = false;
+  FaultInjectionTestFS* fault_fs_;
+
  private:
   InstrumentedMutex mutex_;
   InstrumentedCondVar cv_;
@@ -152,7 +181,7 @@ class ErrorHandlerFSListener : public EventListener {
   IOStatus file_creation_error_;
   Status bg_error_;
   Status new_bg_error_;
-  FaultInjectionTestFS* fault_fs_;
+  int special_count_ = 1;
 };
 
 TEST_F(DBErrorHandlingFSTest, FLushWriteError) {
@@ -2526,6 +2555,46 @@ TEST_F(DBErrorHandlingFSTest, FlushErrorRecoveryRaceWithDBDestruction) {
 
   SyncPoint::GetInstance()->DisableProcessing();
   SyncPoint::GetInstance()->ClearAllCallBacks();
+  Destroy(options);
+}
+
+TEST_F(DBErrorHandlingFSTest, SecondRace) {
+  Options options = GetDefaultOptions();
+  options.env = fault_env_.get();
+  options.create_if_missing = true;
+  std::shared_ptr<ErrorHandlerFSListener> listener =
+      std::make_shared<ErrorHandlerFSListener>();
+  listener->fault_fs_ = fault_fs_.get();
+  options.listeners.emplace_back(listener);
+  options.max_write_buffer_number = 2;
+  DestroyAndReopen(options);
+
+  port::Thread flush_thread = port::Thread([&]() {
+    while (!listener->time_to_second_flush_) {
+    }
+    ASSERT_OK(Put("k2", "val"));
+    listener->should_inject_flush_error_ = true;
+    FlushOptions fo;
+    fo.wait = false;
+    dbfull()->Flush(fo);
+    listener->second_flush_started_ = true;
+  });
+
+  SyncPoint::GetInstance()->EnableProcessing();
+  // TODO
+  // (1) 2 threads sync up
+  // (2) - write stall or check invariant (in the third flush start?)
+  ASSERT_OK(Put("k1", "val"));
+  listener->should_inject_flush_error_ = true;
+  Flush();
+  listener->WaitForRecovery(5000000);
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  flush_thread.join();
+  while (true)
+    ;
   Destroy(options);
 }
 

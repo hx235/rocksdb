@@ -398,7 +398,7 @@ IOStatus TestFSRandomAccessFile::Read(uint64_t offset, size_t n,
                                       const IOOptions& options, Slice* result,
                                       char* scratch,
                                       IODebugContext* dbg) const {
-  if (!fs_->IsFilesystemActive()) {
+  if (!fs_->IsFilesystemActive() || !fs_->GetError().ok()) {
     return fs_->GetError();
   }
   IOStatus s = target_->Read(offset, n, options, result, scratch, dbg);
