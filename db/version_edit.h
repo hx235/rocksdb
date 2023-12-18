@@ -72,6 +72,15 @@ enum Tag : uint32_t {
   kWalAddition2,
   kWalDeletion2,
   kPersistUserDefinedTimestamps,
+  kRCDBSessionId,
+  kRCJobId,
+  kRCInput,
+  kRCOutputLevel,
+  kRCPenultimateLevel,
+  kRCPenultimateLevelSmallest,
+  kRCPenultimateLevelLargest,
+  kRCSubcompactionStart,
+  kRCSubcompactionEnd,
 };
 
 enum NewFileCustomTag : uint32_t {
@@ -531,6 +540,53 @@ class VersionEdit {
     }
   }
 
+  void AddRCInfo(
+      const std::string& rc_db_session_id, uint64_t rc_job_id,
+      const std::vector<std::pair<int, std::vector<uint64_t>>>& rc_inputs,
+      int rc_output_level, int rc_penultimate_level,
+      const InternalKey& rc_penultimate_level_smallest,
+      const InternalKey& rc_penultimate_level_largest,
+      const std::string& rc_subcompaction_start,
+      const std::string& rc_subcompaction_end) {
+    rc_db_session_id_ = rc_db_session_id;
+    rc_job_id_ = rc_job_id;
+    rc_inputs_ = rc_inputs;
+    rc_output_level_ = rc_output_level;
+    rc_penultimate_level_ = rc_penultimate_level;
+    rc_penultimate_level_smallest_ = rc_penultimate_level_smallest;
+    rc_penultimate_level_largest_ = rc_penultimate_level_largest;
+    rc_subcompaction_start_ = rc_subcompaction_start;
+    rc_subcompaction_end_ = rc_subcompaction_end;
+  }
+
+  bool HasRCDBSessionID() const { return !rc_db_session_id_.empty(); }
+
+  std::string GetRCDbSessionID() const { return rc_db_session_id_; }
+
+  uint64_t GetRCJobID() const { return rc_job_id_; }
+
+  std::vector<std::pair<int, std::vector<uint64_t>>> GetRCInputs() const {
+    return rc_inputs_;
+  }
+
+  int GetRCOutputLevel() const { return rc_output_level_; }
+
+  int GetRCPenultimateLevel() const { return rc_penultimate_level_; }
+
+  InternalKey GetRCPenultimateLevelSmallest() const {
+    return rc_penultimate_level_smallest_;
+  }
+
+  InternalKey GetRCPenultimateLevelLargest() const {
+    return rc_penultimate_level_largest_;
+  }
+
+  std::string GetRCSubcompactionStart() const {
+    return rc_subcompaction_start_;
+  }
+
+  std::string GetRCSubcompactionEnd() const { return rc_subcompaction_end_; }
+
   // Add a new blob file.
   void AddBlobFile(uint64_t blob_file_number, uint64_t total_blob_count,
                    uint64_t total_blob_bytes, std::string checksum_method,
@@ -764,6 +820,16 @@ class VersionEdit {
   // Since table files and blob files share the same file number space, we just
   // record the file number here.
   autovector<uint64_t> files_to_quarantine_;
+
+  std::string rc_db_session_id_;
+  uint64_t rc_job_id_;
+  std::vector<std::pair<int, std::vector<uint64_t>>> rc_inputs_;
+  int rc_output_level_;
+  int rc_penultimate_level_;
+  InternalKey rc_penultimate_level_smallest_;
+  InternalKey rc_penultimate_level_largest_;
+  std::string rc_subcompaction_start_;
+  std::string rc_subcompaction_end_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

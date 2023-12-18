@@ -549,6 +549,86 @@ class ColumnFamilyData {
   // of its files (if missing)
   void RecoverEpochNumbers();
 
+  void AddTempRCInfo(
+      const std::string& rc_db_session_id, uint64_t rc_job_id,
+      const std::vector<std::pair<int, std::vector<uint64_t>>>& rc_inputs,
+      int rc_output_level, int rc_penultimate_level,
+      const InternalKey& rc_penultimate_level_smallest,
+      const InternalKey& rc_penultimate_level_largest,
+      const std::string& rc_subcompaction_start,
+      const std::string& rc_subcompaction_end) {
+    assert(!rc_inputs.empty());
+    for (auto& input : rc_inputs) {
+      assert(input.second.size() > 0);
+    }
+
+    uint64_t rc_compaction_id = rc_job_id >> 32;
+    constexpr uint32_t LAST_32_BITS_MASK = 0xffffffffU;
+    uint64_t rc_subcompaction_id = rc_job_id & LAST_32_BITS_MASK;
+
+    auto iter_1 =
+        rc_db_session_id_to_rc_compactions_map_.find(rc_db_session_id);
+    if (iter_1 != rc_db_session_id_to_rc_compactions_map_.end()) {
+      std::map<uint64_t, TempRCInfo>& rc_compaction_id_to_info_map =
+          iter_1->second;
+      auto iter_2 = rc_compaction_id_to_info_map.find(rc_compaction_id);
+      if (iter_2 != rc_compaction_id_to_info_map.end()) {
+        assert(rc_subcompaction_start.size() != 0 ||
+               rc_subcompaction_end.size() != 0);
+        TempRCInfo& rc_compaction_info = iter_2->second;
+        rc_compaction_info.rc_subcompaction_ids_.push_back(rc_subcompaction_id);
+        rc_compaction_info.rc_subcompactions_.push_back(
+            {rc_subcompaction_start, rc_subcompaction_end});
+      } else {
+        TempRCInfo rc_compaction_info;
+        if (rc_subcompaction_start.size() == 0 &&
+            rc_subcompaction_end.size() == 0) {
+          rc_compaction_info = {rc_inputs,
+                                rc_output_level,
+                                rc_penultimate_level,
+                                rc_penultimate_level_smallest,
+                                rc_penultimate_level_largest,
+                                {},
+                                {}};
+        } else {
+          rc_compaction_info = {
+              rc_inputs,
+              rc_output_level,
+              rc_penultimate_level,
+              rc_penultimate_level_smallest,
+              rc_penultimate_level_largest,
+              {rc_subcompaction_id},
+              {{rc_subcompaction_start, rc_subcompaction_end}}};
+        }
+        rc_compaction_id_to_info_map.insert(
+            {rc_compaction_id, rc_compaction_info});
+      }
+    } else {
+      rc_db_session_id_to_rc_compactions_map_.insert({rc_db_session_id, {}});
+      TempRCInfo rc_compaction_info;
+      if (rc_subcompaction_start.size() == 0 &&
+          rc_subcompaction_end.size() == 0) {
+        rc_compaction_info = {rc_inputs,
+                              rc_output_level,
+                              rc_penultimate_level,
+                              rc_penultimate_level_smallest,
+                              rc_penultimate_level_largest,
+                              {},
+                              {}};
+      } else {
+        rc_compaction_info = {rc_inputs,
+                              rc_output_level,
+                              rc_penultimate_level,
+                              rc_penultimate_level_smallest,
+                              rc_penultimate_level_largest,
+                              {rc_subcompaction_id},
+                              {{rc_subcompaction_start, rc_subcompaction_end}}};
+      }
+      rc_db_session_id_to_rc_compactions_map_[rc_db_session_id].insert(
+          {rc_compaction_id, rc_compaction_info});
+    }
+  }
+
  private:
   friend class ColumnFamilySet;
   ColumnFamilyData(uint32_t id, const std::string& name,
@@ -604,8 +684,8 @@ class ColumnFamilyData {
   std::unique_ptr<ThreadLocalPtr> local_sv_;
 
   // pointers for a circular linked list. we use it to support iterations over
-  // all column families that are alive (note: dropped column families can also
-  // be alive as long as client holds a reference)
+  // all column families that are alive (note: dropped column families can
+  // also be alive as long as client holds a reference)
   ColumnFamilyData* next_;
   ColumnFamilyData* prev_;
 
@@ -622,7 +702,8 @@ class ColumnFamilyData {
 
   std::unique_ptr<WriteControllerToken> write_controller_token_;
 
-  // If true --> this ColumnFamily is currently present in DBImpl::flush_queue_
+  // If true --> this ColumnFamily is currently present in
+  // DBImpl::flush_queue_
   bool queued_for_flush_;
 
   // If true --> this ColumnFamily is currently present in
@@ -644,12 +725,24 @@ class ColumnFamilyData {
 
   std::string full_history_ts_low_;
 
-  // For charging memory usage of file metadata created for newly added files to
-  // a Version associated with this CFD
+  // For charging memory usage of file metadata created for newly added files
+  // to a Version associated with this CFD
   std::shared_ptr<CacheReservationManager> file_metadata_cache_res_mgr_;
   bool mempurge_used_;
 
   std::atomic<uint64_t> next_epoch_number_;
+
+  struct TempRCInfo {
+    std::vector<std::pair<int, std::vector<uint64_t>>> rc_inputs_;
+    int rc_output_level_;
+    int rc_penultimate_level_;
+    InternalKey rc_penultimate_level_smallest_;
+    InternalKey rc_penultimate_level_largest_;
+    std::vector<uint64_t> rc_subcompaction_ids_;
+    std::vector<std::pair<std::string, std::string>> rc_subcompactions_;
+  };
+  std::map<std::string, std::map<uint64_t, TempRCInfo>>
+      rc_db_session_id_to_rc_compactions_map_;
 };
 
 // ColumnFamilySet has interesting thread-safety requirements

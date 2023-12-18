@@ -8,6 +8,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+#include <iostream>
+
 #include "db/compaction/compaction_job.h"
 #include "db/compaction/compaction_state.h"
 #include "logging/logging.h"
@@ -53,48 +55,99 @@ CompactionJob::ProcessKeyValueCompactionWithCompactionService(
   compaction_input.end =
       compaction_input.has_end ? sub_compact->end->ToString() : "";
 
-  std::string compaction_input_binary;
-  Status s = compaction_input.Write(&compaction_input_binary);
-  if (!s.ok()) {
-    sub_compact->status = s;
-    return CompactionServiceJobStatus::kFailure;
-  }
+  CompactionServiceJobInfo info;
+  CompactionServiceJobStatus compaction_status;
+  Status s;
+  bool is_first_one;
 
-  std::ostringstream input_files_oss;
-  bool is_first_one = true;
-  for (const auto& file : compaction_input.input_files) {
-    input_files_oss << (is_first_one ? "" : ", ") << file;
-    is_first_one = false;
-  }
+  if (sub_compact->compaction->GetRCDbSessionID().size() == 0) {
+    std::string compaction_input_binary;
+    s = compaction_input.Write(&compaction_input_binary);
+    if (!s.ok()) {
+      sub_compact->status = s;
+      return CompactionServiceJobStatus::kFailure;
+    }
 
-  ROCKS_LOG_INFO(
-      db_options_.info_log,
-      "[%s] [JOB %d] Starting remote compaction (output level: %d): %s",
-      compaction_input.column_family.name.c_str(), job_id_,
-      compaction_input.output_level, input_files_oss.str().c_str());
-  CompactionServiceJobInfo info(dbname_, db_id_, db_session_id_,
-                                GetCompactionId(sub_compact), thread_pri_);
-  CompactionServiceJobStatus compaction_status =
-      db_options_.compaction_service->StartV2(info, compaction_input_binary);
-  switch (compaction_status) {
-    case CompactionServiceJobStatus::kSuccess:
-      break;
-    case CompactionServiceJobStatus::kFailure:
-      sub_compact->status = Status::Incomplete(
-          "CompactionService failed to start compaction job.");
-      ROCKS_LOG_WARN(db_options_.info_log,
-                     "[%s] [JOB %d] Remote compaction failed to start.",
-                     compaction_input.column_family.name.c_str(), job_id_);
-      return compaction_status;
-    case CompactionServiceJobStatus::kUseLocal:
-      ROCKS_LOG_INFO(
-          db_options_.info_log,
-          "[%s] [JOB %d] Remote compaction fallback to local by API Start.",
-          compaction_input.column_family.name.c_str(), job_id_);
-      return compaction_status;
-    default:
-      assert(false);  // unknown status
-      break;
+    std::ostringstream input_files_oss;
+    is_first_one = true;
+    for (const auto& file : compaction_input.input_files) {
+      input_files_oss << (is_first_one ? "" : ", ") << file;
+      is_first_one = false;
+    }
+
+    ROCKS_LOG_INFO(
+        db_options_.info_log,
+        "[%s] [JOB %d] Starting remote compaction (output level: %d): %s",
+        compaction_input.column_family.name.c_str(), job_id_,
+        compaction_input.output_level, input_files_oss.str().c_str());
+    uint64_t compaction_id = GetCompactionId(sub_compact);
+    info = CompactionServiceJobInfo(dbname_, db_id_, db_session_id_,
+                                    compaction_id, thread_pri_);
+    compaction_status =
+        db_options_.compaction_service->StartV2(info, compaction_input_binary);
+    switch (compaction_status) {
+      case CompactionServiceJobStatus::kSuccess:
+        break;
+      case CompactionServiceJobStatus::kFailure:
+        sub_compact->status = Status::Incomplete(
+            "CompactionService failed to start compaction job.");
+        ROCKS_LOG_WARN(db_options_.info_log,
+                       "[%s] [JOB %d] Remote compaction failed to start.",
+                       compaction_input.column_family.name.c_str(), job_id_);
+        return compaction_status;
+      case CompactionServiceJobStatus::kUseLocal:
+        ROCKS_LOG_INFO(
+            db_options_.info_log,
+            "[%s] [JOB %d] Remote compaction fallback to local by API Start.",
+            compaction_input.column_family.name.c_str(), job_id_);
+        return compaction_status;
+      default:
+        assert(false);  // unknown status
+        break;
+    }
+    // Persist
+    VersionEdit vc_info;
+
+    std::vector<std::pair<int, std::vector<uint64_t>>> rc_inputs;
+    for (const auto& files_per_level : inputs) {
+      std::vector<uint64_t> files;
+      for (const auto& file : files_per_level.files) {
+        files.push_back(file->fd.GetNumber());
+      }
+      assert(!files.empty());
+      rc_inputs.emplace_back(files_per_level.level, files);
+    }
+
+    assert(rc_inputs.size() > 0);
+    for (auto& rc_input : rc_inputs) {
+      assert(rc_input.second.size() > 0);
+    }
+    vc_info.AddRCInfo(
+        db_session_id_, compaction_id, rc_inputs, compaction->output_level(),
+        compaction->GetPenultimateLevel(),
+        compaction->GetPenultimateLevelSmallestKey(),
+        compaction->GetPenultimateLevelLargestKey(),
+        sub_compact->start.has_value() ? sub_compact->start->ToString() : "",
+        sub_compact->end.has_value() ? sub_compact->end->ToString() : "");
+    {
+      db_mutex_->Lock();
+      s = versions_->LogAndApply(
+          compaction->column_family_data(),
+          *(compaction->column_family_data()->GetLatestMutableCFOptions()),
+          ReadOptions(Env::IOActivity::kCompaction), &vc_info, db_mutex_,
+          db_directory_);
+      db_mutex_->Unlock();
+    }
+
+    assert(s.ok());
+
+  } else {
+    uint64_t rc_compaction_job_id = sub_compact->compaction->GetRCCompactionId()
+                                        << 32 |
+                                    sub_compact->sub_job_id;
+    info = CompactionServiceJobInfo(dbname_, db_id_,
+                                    sub_compact->compaction->GetRCDbSessionID(),
+                                    rc_compaction_job_id, thread_pri_);
   }
 
   ROCKS_LOG_INFO(db_options_.info_log,
@@ -830,4 +883,3 @@ bool CompactionServiceInput::TEST_Equals(CompactionServiceInput* other,
 }
 #endif  // NDEBUG
 }  // namespace ROCKSDB_NAMESPACE
-

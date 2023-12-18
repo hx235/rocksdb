@@ -417,7 +417,7 @@ struct CompactionServiceJobInfo {
                     // different DBs and sessions.
 
   Env::Priority priority;
-
+  CompactionServiceJobInfo() {}
   CompactionServiceJobInfo(std::string db_name_, std::string db_id_,
                            std::string db_session_id_, uint64_t job_id_,
                            Env::Priority priority_)

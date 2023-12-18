@@ -9,6 +9,8 @@
 
 #include "db/version_edit.h"
 
+#include <iostream>
+
 #include "db/blob/blob_index.h"
 #include "db/version_set.h"
 #include "logging/event_logger.h"
@@ -17,7 +19,6 @@
 #include "test_util/sync_point.h"
 #include "util/coding.h"
 #include "util/string_util.h"
-
 namespace ROCKSDB_NAMESPACE {
 
 namespace {}  // anonymous namespace
@@ -318,6 +319,54 @@ bool VersionEdit::EncodeTo(std::string* dst,
     char p = static_cast<char>(persist_user_defined_timestamps_);
     PutLengthPrefixedSlice(dst, Slice(&p, 1));
   }
+
+  if (!rc_db_session_id_.empty()) {
+    PutVarint32(dst, kRCDBSessionId);
+    PutLengthPrefixedSlice(dst, rc_db_session_id_);
+  }
+
+  // if rc_job_id_??
+  PutVarint32Varint64(dst, kRCJobId, rc_job_id_);
+
+  if (!rc_inputs_.empty()) {
+    for (const std::pair<int, std::vector<uint64_t>>& pair : rc_inputs_) {
+      PutVarint32(dst, kRCInput);
+      PutVarint32(dst, pair.first /* level */);
+      PutVarint64(dst, pair.second.size() /* length */);
+      assert(!pair.second.empty());
+      for (uint64_t file_number : pair.second) {
+        PutVarint64(dst, file_number);
+      }
+    }
+  }
+
+  // if rc_output_level_ ??
+  PutVarint32Varint32(dst, kRCOutputLevel, rc_output_level_);
+
+  // if rc_penultimate_level_ ??
+  PutVarint32Varint32(dst, kRCPenultimateLevel, rc_penultimate_level_);
+
+  if (rc_penultimate_level_smallest_.size() > 0) {
+    PutVarint32(dst, kRCPenultimateLevelSmallest);
+    PutLengthPrefixedSlice(dst, rc_penultimate_level_smallest_.Encode());
+  }
+
+  if (rc_penultimate_level_largest_.size() > 0) {
+    PutVarint32(dst, kRCPenultimateLevelLargest);
+    PutLengthPrefixedSlice(dst, rc_penultimate_level_largest_.Encode());
+  }
+
+  // if rc_subcompaction_start_
+  if (rc_subcompaction_start_.size() > 0) {
+    PutVarint32(dst, kRCSubcompactionStart);
+    PutLengthPrefixedSlice(dst, rc_subcompaction_start_);
+  }
+
+  // if rc_subcompaction_end_
+  if (rc_subcompaction_end_.size() > 0) {
+    PutVarint32(dst, kRCSubcompactionEnd);
+    PutLengthPrefixedSlice(dst, rc_subcompaction_end_);
+  }
   return true;
 }
 
@@ -509,6 +558,7 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
       tag = kTagSafeIgnoreMask;
     }
 #endif
+    std::vector<uint64_t> files_1;
     switch (tag) {
       case kDbId:
         if (GetLengthPrefixedSlice(&input, &str)) {
@@ -796,6 +846,61 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
           persist_user_defined_timestamps_ = (str[0] == 1);
           has_persist_user_defined_timestamps_ = true;
         }
+        break;
+
+      case kRCDBSessionId:
+        GetLengthPrefixedSlice(&input, &str);
+        rc_db_session_id_.assign(str.data(), str.size());
+        break;
+
+      case kRCJobId:
+        GetVarint64(&input, &rc_job_id_);
+        break;
+
+      case kRCInput:
+        files_1.clear();
+
+        uint32_t rc_input_level;
+        GetVarint32(&input, &rc_input_level);
+        uint64_t rc_input_length;
+        GetVarint64(&input, &rc_input_length);
+        for (uint64_t i = 0; i < rc_input_length; ++i) {
+          uint64_t rc_input_file_number;
+          GetVarint64(&input, &rc_input_file_number);
+          files_1.push_back(rc_input_file_number);
+        }
+        assert(!files_1.empty());
+        rc_inputs_.push_back({rc_input_level, files_1});
+        break;
+
+      case kRCOutputLevel:
+        uint32_t rc_output_level;
+        GetVarint32(&input, &rc_output_level);
+        rc_output_level_ = rc_output_level;
+        break;
+
+      case kRCPenultimateLevel:
+        uint32_t rc_penultimate_level;
+        GetVarint32(&input, &rc_penultimate_level);
+        rc_penultimate_level_ = rc_penultimate_level;
+        break;
+
+      case kRCPenultimateLevelSmallest:
+        GetInternalKey(&input, &rc_penultimate_level_smallest_);
+        break;
+
+      case kRCPenultimateLevelLargest:
+        GetInternalKey(&input, &rc_penultimate_level_largest_);
+        break;
+
+      case kRCSubcompactionStart:
+        GetLengthPrefixedSlice(&input, &str);
+        rc_subcompaction_start_.assign(str.data(), str.size());
+        break;
+
+      case kRCSubcompactionEnd:
+        GetLengthPrefixedSlice(&input, &str);
+        rc_subcompaction_end_.assign(str.data(), str.size());
         break;
 
       default:

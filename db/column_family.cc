@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -40,7 +42,6 @@
 #include "util/autovector.h"
 #include "util/cast_util.h"
 #include "util/compression.h"
-
 namespace ROCKSDB_NAMESPACE {
 
 ColumnFamilyHandleImpl::ColumnFamilyHandleImpl(
@@ -1109,12 +1110,70 @@ void ColumnFamilyData::CreateNewMemtable(
 
 bool ColumnFamilyData::NeedsCompaction() const {
   return !mutable_cf_options_.disable_auto_compactions &&
-         compaction_picker_->NeedsCompaction(current_->storage_info());
+         (!rc_db_session_id_to_rc_compactions_map_.empty() ||
+          compaction_picker_->NeedsCompaction(current_->storage_info()));
 }
 
 Compaction* ColumnFamilyData::PickCompaction(
     const MutableCFOptions& mutable_options,
     const MutableDBOptions& mutable_db_options, LogBuffer* log_buffer) {
+  while (!rc_db_session_id_to_rc_compactions_map_.empty()) {
+    auto rc_db_session_id_to_rc_compactions_map_it =
+        rc_db_session_id_to_rc_compactions_map_.begin();
+    auto rc_db_session_id = rc_db_session_id_to_rc_compactions_map_it->first;
+    auto rc_compaction_id_to_info_map =
+        rc_db_session_id_to_rc_compactions_map_it->second;
+    rc_db_session_id_to_rc_compactions_map_.erase(
+        rc_db_session_id_to_rc_compactions_map_it);
+    while (!rc_compaction_id_to_info_map.empty()) {
+      auto rc_compaction_id_to_info_map_it =
+          rc_compaction_id_to_info_map.begin();
+      auto rc_compaction_id = rc_compaction_id_to_info_map_it->first;
+      auto rc_info = rc_compaction_id_to_info_map_it->second;
+      rc_compaction_id_to_info_map.erase(rc_compaction_id_to_info_map_it);
+      std::vector<CompactionInputFiles> inputs;
+      bool has_error = false;
+      for (auto& rc_input : rc_info.rc_inputs_) {
+        CompactionInputFiles input;
+        input.level = rc_input.first;
+        assert(rc_input.second.size() > 0);
+        for (uint64_t rc_input_file_number : rc_input.second) {
+          FileMetaData* file =
+              current_->storage_info()->GetFileMetaDataByNumber(
+                  rc_input_file_number);
+          if (file == nullptr) {
+            has_error = true;
+            break;
+          }
+          input.files.push_back(file);
+        }
+        if (has_error) {
+          break;
+        }
+        inputs.push_back(input);
+      }
+      if (!has_error && !inputs.empty()) {
+        std::vector<std::pair<std::string, std::string>> rc_subcompactions =
+            rc_info.rc_subcompactions_;
+        Compaction* result = new Compaction(
+            current_->storage_info(), ioptions_, mutable_options,
+            mutable_db_options, inputs, rc_info.rc_output_level_,
+            std::numeric_limits<uint64_t>::max(),
+            std::numeric_limits<uint64_t>::max(), 0,
+            CompressionType::kNoCompression, CompressionOptions(),
+            Temperature::kUnknown, std::numeric_limits<uint32_t>::max(), {},
+            false, "", -1, false, true, CompactionReason::kUnknown,
+            BlobGarbageCollectionPolicy::kUseDefault, -1,
+            rc_info.rc_penultimate_level_,
+            rc_info.rc_penultimate_level_smallest_,
+            rc_info.rc_penultimate_level_largest_, rc_db_session_id,
+            rc_compaction_id, rc_info.rc_subcompaction_ids_,
+            rc_info.rc_subcompactions_);
+        result->FinalizeInputInfo(current_);
+        return result;
+      }
+    }
+  }
   auto* result = compaction_picker_->PickCompaction(
       GetName(), mutable_options, mutable_db_options, current_->storage_info(),
       log_buffer);

@@ -166,7 +166,11 @@ class CompactionJob {
       std::string full_history_ts_low = "", std::string trim_ts = "",
       BlobFileCompletionCallback* blob_callback = nullptr,
       int* bg_compaction_scheduled = nullptr,
-      int* bg_bottom_compaction_scheduled = nullptr);
+      int* bg_bottom_compaction_scheduled = nullptr,
+      std::string rc_db_session_id = "",
+      uint64_t rc_compaction_id = std::numeric_limits<uint64_t>::max(),
+      std::vector<uint64_t> rc_subcompaction_ids = {},
+      std::vector<std::pair<std::string, std::string>> rc_subcompactions = {});
 
   virtual ~CompactionJob();
 
@@ -233,6 +237,11 @@ class CompactionJob {
   IOStatus io_status_;
 
   CompactionJobStats* compaction_job_stats_;
+
+  std::string rc_db_session_id_;
+  uint64_t rc_compaction_id_;
+  std::vector<uint64_t> rc_subcompaction_ids_;
+  std::vector<std::pair<std::string, std::string>> rc_subcompactions_;
 
  private:
   friend class CompactionJobTestBase;

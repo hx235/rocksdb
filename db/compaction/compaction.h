@@ -80,23 +80,29 @@ class CompactionFilter;
 // A Compaction encapsulates metadata about a compaction.
 class Compaction {
  public:
-  Compaction(VersionStorageInfo* input_version,
-             const ImmutableOptions& immutable_options,
-             const MutableCFOptions& mutable_cf_options,
-             const MutableDBOptions& mutable_db_options,
-             std::vector<CompactionInputFiles> inputs, int output_level,
-             uint64_t target_file_size, uint64_t max_compaction_bytes,
-             uint32_t output_path_id, CompressionType compression,
-             CompressionOptions compression_opts,
-             Temperature output_temperature, uint32_t max_subcompactions,
-             std::vector<FileMetaData*> grandparents,
-             bool manual_compaction = false, const std::string& trim_ts = "",
-             double score = -1, bool deletion_compaction = false,
-             bool l0_files_might_overlap = true,
-             CompactionReason compaction_reason = CompactionReason::kUnknown,
-             BlobGarbageCollectionPolicy blob_garbage_collection_policy =
-                 BlobGarbageCollectionPolicy::kUseDefault,
-             double blob_garbage_collection_age_cutoff = -1);
+  Compaction(
+      VersionStorageInfo* input_version,
+      const ImmutableOptions& immutable_options,
+      const MutableCFOptions& mutable_cf_options,
+      const MutableDBOptions& mutable_db_options,
+      std::vector<CompactionInputFiles> inputs, int output_level,
+      uint64_t target_file_size, uint64_t max_compaction_bytes,
+      uint32_t output_path_id, CompressionType compression,
+      CompressionOptions compression_opts, Temperature output_temperature,
+      uint32_t max_subcompactions, std::vector<FileMetaData*> grandparents,
+      bool manual_compaction = false, const std::string& trim_ts = "",
+      double score = -1, bool deletion_compaction = false,
+      bool l0_files_might_overlap = true,
+      CompactionReason compaction_reason = CompactionReason::kUnknown,
+      BlobGarbageCollectionPolicy blob_garbage_collection_policy =
+          BlobGarbageCollectionPolicy::kUseDefault,
+      double blob_garbage_collection_age_cutoff = -1,
+      int penultimate_level = -1, InternalKey penultimate_level_smallest = {},
+      InternalKey penultimate_level_largest = {},
+      std::string rc_db_session_id = "",
+      uint64_t rc_compaction_id = std::numeric_limits<uint64_t>::max(),
+      std::vector<uint64_t> rc_subcompaction_ids = {},
+      std::vector<std::pair<std::string, std::string>> rc_subcompactions = {});
 
   // The type of the penultimate level output range
   enum class PenultimateOutputRangeType : int {
@@ -432,6 +438,26 @@ class Compaction {
                                       const int start_level,
                                       const int output_level);
 
+  InternalKey GetPenultimateLevelSmallestKey() const {
+    return penultimate_level_smallest_;
+  }
+
+  InternalKey GetPenultimateLevelLargestKey() const {
+    return penultimate_level_largest_;
+  }
+
+  std::string GetRCDbSessionID() const { return rc_db_session_id_; }
+
+  uint64_t GetRCCompactionId() const { return rc_compaction_id_; }
+
+  std::vector<uint64_t> GetRCSubompactionIds() const {
+    return rc_subcompaction_ids_;
+  }
+
+  std::vector<std::pair<std::string, std::string>> GetRCSubcompactions() const {
+    return rc_subcompactions_;
+  }
+
  private:
   void SetInputVersion(Version* input_version);
 
@@ -569,6 +595,10 @@ class Compaction {
   InternalKey penultimate_level_largest_;
   PenultimateOutputRangeType penultimate_output_range_type_ =
       PenultimateOutputRangeType::kNotSupported;
+  std::string rc_db_session_id_;
+  uint64_t rc_compaction_id_;
+  std::vector<uint64_t> rc_subcompaction_ids_;
+  std::vector<std::pair<std::string, std::string>> rc_subcompactions_;
 };
 
 #ifndef NDEBUG

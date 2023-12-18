@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -145,7 +146,9 @@ CompactionJob::CompactionJob(
     const std::string& db_id, const std::string& db_session_id,
     std::string full_history_ts_low, std::string trim_ts,
     BlobFileCompletionCallback* blob_callback, int* bg_compaction_scheduled,
-    int* bg_bottom_compaction_scheduled)
+    int* bg_bottom_compaction_scheduled, std::string rc_db_session_id,
+    uint64_t rc_compaction_id, std::vector<uint64_t> rc_subcompaction_ids,
+    std::vector<std::pair<std::string, std::string>> rc_subcompactions)
     : compact_(new CompactionState(compaction)),
       compaction_stats_(compaction->compaction_reason(), 1),
       db_options_(db_options),
@@ -156,6 +159,10 @@ CompactionJob::CompactionJob(
       bottommost_level_(false),
       write_hint_(Env::WLTH_NOT_SET),
       compaction_job_stats_(compaction_job_stats),
+      rc_db_session_id_(rc_db_session_id),
+      rc_compaction_id_(rc_compaction_id),
+      rc_subcompaction_ids_(rc_subcompaction_ids),
+      rc_subcompactions_(rc_subcompactions),
       job_id_(job_id),
       dbname_(dbname),
       db_id_(db_id),
@@ -256,7 +263,53 @@ void CompactionJob::Prepare() {
   write_hint_ = cfd->CalculateSSTWriteHint(c->output_level());
   bottommost_level_ = c->bottommost_level();
 
-  if (c->ShouldFormSubcompactions()) {
+  if (!rc_db_session_id_.empty()) {
+    if (rc_subcompactions_.size() > 0) {
+      // resource
+      uint64_t max_subcompactions_limit = GetSubcompactionsLimit();
+      uint64_t num_actual_subcompactions = rc_subcompactions_.size();
+      AcquireSubcompactionResources(
+          (int)(num_actual_subcompactions - max_subcompactions_limit));
+
+      // states
+      // copy
+      std::vector<std::pair<std::string, std::string>> rc_subcompactions_copy =
+          rc_subcompactions_;
+      // sort
+      std::sort(rc_subcompactions_copy.begin(), rc_subcompactions_copy.end(),
+                [&c](const std::pair<std::string, std::string>& sc1,
+                     const std::pair<std::string, std::string>& sc2) {
+                  if (sc1.first.empty() || sc2.second.empty()) {
+                    return true;
+                  } else if (sc1.second.empty() || sc2.first.empty()) {
+                    return false;
+                  }
+                  return (c->column_family_data()
+                                      ->user_comparator()
+                                      ->CompareWithoutTimestamp(sc1.second,
+                                                                sc2.second) < 0
+                              ? true
+                              : false);
+                });
+      // state
+      for (std::size_t i = 0; i < rc_subcompactions_copy.size(); ++i) {
+        auto it =
+            std::find(rc_subcompactions_.begin(), rc_subcompactions_.end(),
+                      rc_subcompactions_copy[i]);
+        auto index = it - rc_subcompactions_.begin();
+        compact_->sub_compact_states.emplace_back(
+            c, std::optional<Slice>(rc_subcompactions_copy[i].first),
+            std::optional<Slice>(rc_subcompactions_copy[i].second),
+            rc_subcompaction_ids_[index]);
+      }
+      // stats
+      RecordInHistogram(stats_, NUM_SUBCOMPACTIONS_SCHEDULED,
+                        compact_->sub_compact_states.size());
+    } else {
+      compact_->sub_compact_states.emplace_back(c, std::nullopt, std::nullopt,
+                                                /*sub_job_id*/ 0);
+    }
+  } else if (c->ShouldFormSubcompactions()) {
     StopWatch sw(db_options_.clock, stats_, SUBCOMPACTION_SETUP_TIME);
     GenSubcompactionBoundaries();
   }

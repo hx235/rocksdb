@@ -285,7 +285,11 @@ Compaction::Compaction(
     bool _deletion_compaction, bool l0_files_might_overlap,
     CompactionReason _compaction_reason,
     BlobGarbageCollectionPolicy _blob_garbage_collection_policy,
-    double _blob_garbage_collection_age_cutoff)
+    double _blob_garbage_collection_age_cutoff, int penultimate_level,
+    InternalKey penultimate_level_smallest,
+    InternalKey penultimate_level_largest, std::string rc_db_session_id,
+    uint64_t rc_compaction_id, std::vector<uint64_t> rc_subcompaction_ids,
+    std::vector<std::pair<std::string, std::string>> rc_subcompactions)
     : input_vstorage_(vstorage),
       start_level_(_inputs[0].level),
       output_level_(_output_level),
@@ -334,14 +338,21 @@ Compaction::Compaction(
               ? mutable_cf_options()->blob_garbage_collection_age_cutoff
               : _blob_garbage_collection_age_cutoff),
       penultimate_level_(
-          // For simplicity, we don't support the concept of "penultimate level"
-          // with `CompactionReason::kExternalSstIngestion` and
-          // `CompactionReason::kRefitLevel`
-          _compaction_reason == CompactionReason::kExternalSstIngestion ||
+          penultimate_level != -1
+              ? penultimate_level
+              :
+              // For simplicity, we don't support the concept of "penultimate
+              // level" with `CompactionReason::kExternalSstIngestion` and
+              // `CompactionReason::kRefitLevel`
+              _compaction_reason == CompactionReason::kExternalSstIngestion ||
                   _compaction_reason == CompactionReason::kRefitLevel
               ? Compaction::kInvalidLevel
               : EvaluatePenultimateLevel(vstorage, immutable_options_,
-                                         start_level_, output_level_)) {
+                                         start_level_, output_level_)),
+      rc_db_session_id_(rc_db_session_id),
+      rc_compaction_id_(rc_compaction_id),
+      rc_subcompaction_ids_(rc_subcompaction_ids),
+      rc_subcompactions_(rc_subcompactions) {
   MarkFilesBeingCompacted(true);
   if (is_manual_compaction_) {
     compaction_reason_ = CompactionReason::kManualCompaction;
@@ -395,8 +406,13 @@ Compaction::Compaction(
       }
     }
   }
-
-  PopulatePenultimateLevelOutputRange();
+  if (penultimate_level_smallest.size() == 0 ||
+      penultimate_level_largest.size() == 0) {
+    penultimate_level_smallest_ = penultimate_level_smallest;
+    penultimate_level_largest_ = penultimate_level_largest;
+  } else {
+    PopulatePenultimateLevelOutputRange();
+  }
 }
 
 void Compaction::PopulatePenultimateLevelOutputRange() {

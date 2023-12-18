@@ -633,6 +633,14 @@ Status VersionEditHandler::ExtractInfoFromVersionEdit(ColumnFamilyData* cfd,
       const std::string& new_ts = edit.GetFullHistoryTsLow();
       cfd->SetFullHistoryTsLow(new_ts);
     }
+    if (edit.HasRCDBSessionID()) {
+      cfd->AddTempRCInfo(
+          edit.GetRCDbSessionID(), edit.GetRCJobID(), edit.GetRCInputs(),
+          edit.GetRCOutputLevel(), edit.GetRCPenultimateLevel(),
+          edit.GetRCPenultimateLevelSmallest(),
+          edit.GetRCPenultimateLevelLargest(), edit.GetRCSubcompactionStart(),
+          edit.GetRCSubcompactionEnd());
+    }
   }
 
   if (s.ok()) {

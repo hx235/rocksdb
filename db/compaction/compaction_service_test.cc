@@ -229,6 +229,8 @@ class CompactionServiceTest : public DBTestBase {
 
 TEST_F(CompactionServiceTest, BasicCompactions) {
   Options options = CurrentOptions();
+  options.max_subcompactions = 2;
+  options.target_file_size_base = 1 << 5;  // 1KB
   ReopenWithCompactionService(&options);
 
   Statistics* primary_statistics = GetPrimaryStatistics();
@@ -322,7 +324,10 @@ TEST_F(CompactionServiceTest, BasicCompactions) {
         assert(*id != kNullUniqueId64x2);
         verify_passed++;
       });
+  SyncPoint::GetInstance()->ClearCallBack(
+      "DBImplSecondary::CompactWithoutInstallation::End");
   Reopen(options);
+  dbfull()->TEST_WaitForCompact();
   ASSERT_GT(verify_passed, 0);
   Close();
 }
