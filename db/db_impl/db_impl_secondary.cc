@@ -914,6 +914,8 @@ Status DBImplSecondary::CompactWithoutInstallation(
       input.db_id, db_session_id_, secondary_path_, input, result);
 
   mutex_.Unlock();
+  TEST_SYNC_POINT_CALLBACK(
+      "DBImplSecondary::CompactWithoutInstallation::HackTest", nullptr);
   s = compaction_job.Run();
   mutex_.Lock();
 

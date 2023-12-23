@@ -206,6 +206,14 @@ DBOptions SanitizeOptions(const std::string& dbname, const DBOptions& src,
                    "file size check will be skipped during open.");
   }
 
+  if (result.compaction_service == nullptr && result.resume_compaction) {
+    result.resume_compaction = false;
+    ROCKS_LOG_WARN(
+        result.info_log,
+        "resume_compaction is disabled since it's currently only supported "
+        "when remote compaction is used");
+  }
+
   return result;
 }
 
