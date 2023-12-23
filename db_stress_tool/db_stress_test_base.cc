@@ -36,6 +36,21 @@
 namespace ROCKSDB_NAMESPACE {
 
 namespace {
+class DummyCompactionService : public CompactionService {
+ public:
+  DummyCompactionService() {}
+  const char* Name() const override { return "DummyCompactionService"; }
+
+  CompactionServiceJobStatus StartV2(const CompactionServiceJobInfo&,
+                                     const std::string&) override {
+    return CompactionServiceJobStatus::kSuccess;
+  }
+
+  CompactionServiceJobStatus WaitForCompleteV2(const CompactionServiceJobInfo&,
+                                               std::string*) override {
+    return CompactionServiceJobStatus::kUseLocal;
+  }
+};
 
 std::shared_ptr<const FilterPolicy> CreateFilterPolicy() {
   if (FLAGS_bloom_bits < 0) {
@@ -3393,6 +3408,7 @@ void InitializeOptionsFromFlags(
   options.verify_sst_unique_id_in_manifest =
       FLAGS_verify_sst_unique_id_in_manifest;
   options.resume_compaction = FLAGS_resume_compaction;
+  options.compaction_service = std::make_shared<DummyCompactionService>();
   options.memtable_protection_bytes_per_key =
       FLAGS_memtable_protection_bytes_per_key;
   options.block_protection_bytes_per_key = FLAGS_block_protection_bytes_per_key;
