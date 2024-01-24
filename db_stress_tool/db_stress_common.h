@@ -215,6 +215,7 @@ DECLARE_bool(compare_full_db_state_snapshot);
 DECLARE_uint64(snapshot_hold_ops);
 DECLARE_bool(long_running_snapshots);
 DECLARE_bool(use_multiget);
+DECLARE_int32(use_multiget_batch_size);
 DECLARE_bool(use_get_entity);
 DECLARE_bool(use_multi_get_entity);
 DECLARE_int32(readpercent);

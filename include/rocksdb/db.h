@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <iostream>
 #include <map>
 #include <memory>
 #include <string>
@@ -29,7 +30,6 @@
 #include "rocksdb/types.h"
 #include "rocksdb/version.h"
 #include "rocksdb/wide_columns.h"
-
 #ifdef _WIN32
 // Windows API macro interference
 #undef DeleteFile

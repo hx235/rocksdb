@@ -1107,9 +1107,15 @@ void StressTest::OperateDb(ThreadState* thread) {
           // Leave room for one more iteration of the loop with a single key
           // batch. This is to ensure that each thread does exactly the same
           // number of ops
-          int multiget_batch_size = static_cast<int>(
-              std::min(static_cast<uint64_t>(thread->rand.Uniform(64)),
-                       FLAGS_ops_per_thread - i - 1));
+          // int multiget_batch_size = static_cast<int>(
+          //     std::min(static_cast<uint64_t>(thread->rand.Uniform(64)),
+          //              FLAGS_ops_per_thread - i - 1));
+          int multiget_batch_size =
+              FLAGS_use_multiget_batch_size == -1
+                  ? static_cast<int>(std::min(
+                        static_cast<uint64_t>(thread->rand.Uniform(64)),
+                        FLAGS_ops_per_thread - i - 1))
+                  : FLAGS_use_multiget_batch_size;
           // If its the last iteration, ensure that multiget_batch_size is 1
           multiget_batch_size = std::max(multiget_batch_size, 1);
           rand_keys = GenerateNKeys(thread, multiget_batch_size, i);

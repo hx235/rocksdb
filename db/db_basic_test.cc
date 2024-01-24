@@ -21,6 +21,8 @@
 #include "table/block_based/block_based_table_reader.h"
 #include "table/block_based/block_builder.h"
 #include "test_util/sync_point.h"
+#include "test_util/testharness.h"
+#include "tools/ldb_cmd_impl.h"
 #include "util/file_checksum_helper.h"
 #include "util/random.h"
 #include "utilities/counted_fs.h"
@@ -971,6 +973,38 @@ TEST_F(DBBasicTest, CompactOnFlush) {
     ASSERT_EQ(AllEntriesFor("foo", 1), "[ v9 ]");
     db_->ReleaseSnapshot(snapshot1);
   } while (ChangeCompactOptions());
+}
+
+TEST_F(DBBasicTest, LearnMultiget) {
+  Options options = CurrentOptions();
+  DestroyAndReopen(options);
+  ASSERT_OK(Put("k1", "v1"));
+  ASSERT_OK(Put("k2", "oldv"));
+  ASSERT_OK(Put("k3", "v3"));
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "k1", "k3"));
+  SstFileWriter sst_file_writer(EnvOptions(), options);
+  std::string f = dbname_ + "ingested_file.sst";
+  ASSERT_OK(sst_file_writer.Open(f));
+  ASSERT_OK(sst_file_writer.Put("k2", "newv"));
+  ExternalSstFileInfo f_info;
+  ASSERT_OK(sst_file_writer.Finish(&f_info));
+  ASSERT_OK(db_->IngestExternalFile({f}, IngestExternalFileOptions()));
+
+  ReadOptions ro;
+  ro.snapshot = db_->GetSnapshot();
+
+  std::vector<Slice> keys({"k2"});
+  std::vector<PinnableSlice> values(keys.size());
+  std::vector<Status> statuses(keys.size());
+  db_->MultiGet(ro, dbfull()->DefaultColumnFamily(), keys.size(), keys.data(),
+                values.data(), statuses.data());
+  ASSERT_OK(statuses[0]);
+  ASSERT_EQ(values[0], "newv");
+
+  PinnableSlice value;
+  ASSERT_OK(db_->Get(ro, dbfull()->DefaultColumnFamily(), keys[0], &value));
+  ASSERT_EQ(value, "newv");
 }
 
 TEST_F(DBBasicTest, FlushOneColumnFamily) {

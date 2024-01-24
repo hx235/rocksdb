@@ -770,6 +770,8 @@ DEFINE_bool(long_running_snapshots, false,
 DEFINE_bool(use_multiget, false,
             "If set, use the batched MultiGet API for reads");
 
+DEFINE_int32(use_multiget_batch_size, -1, "");
+
 DEFINE_bool(use_get_entity, false, "If set, use the GetEntity API for reads");
 
 DEFINE_bool(use_multi_get_entity, false,
