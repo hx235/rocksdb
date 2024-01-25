@@ -2039,12 +2039,12 @@ Status DBImpl::Get(const ReadOptions& _read_options,
   assert(value != nullptr);
   value->Reset();
 
-  if (_read_options.io_activity != Env::IOActivity::kUnknown &&
-      _read_options.io_activity != Env::IOActivity::kGet) {
-    return Status::InvalidArgument(
-        "Can only call Get with `ReadOptions::io_activity` is "
-        "`Env::IOActivity::kUnknown` or `Env::IOActivity::kGet`");
-  }
+  // if (_read_options.io_activity != Env::IOActivity::kUnknown &&
+  //     _read_options.io_activity != Env::IOActivity::kGet) {
+  //   return Status::InvalidArgument(
+  //       "Can only call Get with `ReadOptions::io_activity` is "
+  //       "`Env::IOActivity::kUnknown` or `Env::IOActivity::kGet`");
+  // }
 
   ReadOptions read_options(_read_options);
   if (read_options.io_activity == Env::IOActivity::kUnknown) {
@@ -2271,6 +2271,8 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
       snapshot =
           reinterpret_cast<const SnapshotImpl*>(read_options.snapshot)->number_;
     }
+    // std::cout << "[" << env_->GetThreadID() << "]"
+    //           << " Getsnapshot seq " << snapshot << std::endl;
   } else {
     // Note that the snapshot is assigned AFTER referencing the super
     // version because otherwise a flush happening in between may compact away
@@ -3238,6 +3240,10 @@ void DBImpl::MultiGetWithCallbackImpl(
   if (!s.ok()) {
     return;
   }
+  // std::cout << "[" << env_->GetThreadID() << "]"
+  //           << " MultiGet "
+  //           << "snapshot seq " << consistent_seqnum << std::endl;
+
 #ifndef NDEBUG
   assert(sv_from_thread_local);
 #else

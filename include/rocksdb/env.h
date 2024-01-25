@@ -449,6 +449,7 @@ class Env : public Customizable {
     kVerifyFileChecksums = 7,
     kGetEntity = 8,
     kMultiGetEntity = 9,
+    kSpecial = 10,
     kUnknown,  // Keep last for easy array of non-unknowns
   };
 

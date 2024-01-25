@@ -20,11 +20,12 @@ namespace ROCKSDB_NAMESPACE {
 // non-existent according to the `SharedState`.
 class DbStressCompactionFilter : public CompactionFilter {
  public:
-  DbStressCompactionFilter(SharedState* state, int cf_id)
-      : state_(state), cf_id_(cf_id) {}
+  DbStressCompactionFilter(SharedState* state, int cf_id,
+                           const Context& context)
+      : state_(state), cf_id_(cf_id), context_(context) {}
 
-  Decision FilterV2(int /*level*/, const Slice& key, ValueType /*value_type*/,
-                    const Slice& /*existing_value*/, std::string* /*new_value*/,
+  Decision FilterV2(int /*level*/, const Slice& key, ValueType value_type,
+                    const Slice& existing_value, std::string* new_value,
                     std::string* /*skip_until*/) const override {
     if (state_ == nullptr) {
       return Decision::kKeep;
@@ -56,7 +57,23 @@ class DbStressCompactionFilter : public CompactionFilter {
     key_mutex->Unlock();
 
     if (!key_exists) {
-      return allow_overwrite ? Decision::kRemove : Decision::kPurge;
+      if (allow_overwrite) {
+        std::string input_files;
+        for (const auto& input_prop : context_.input_table_properties) {
+          input_files += input_prop.first;
+          input_files += " ";
+        }
+        std::cout << "KRemove Key " << key.ToString(true) << " Existing Value "
+                  << existing_value.ToString(true) << " Input files "
+                  << input_files << " New value " << &new_value
+                  << " Value type " << value_type << std::endl;
+        return Decision::kRemove;
+      } else {
+        std::cout << "kPurge Key " << key.ToString(true) << " Existing Value "
+                  << existing_value.ToString(true) << " New value "
+                  << &new_value << " Value type " << value_type << std::endl;
+        return Decision::kPurge;
+      }
     }
     return Decision::kKeep;
   }
@@ -66,6 +83,7 @@ class DbStressCompactionFilter : public CompactionFilter {
  private:
   SharedState* const state_;
   const int cf_id_;
+  const Context context_;
 };
 
 class DbStressCompactionFilterFactory : public CompactionFilterFactory {
@@ -80,8 +98,8 @@ class DbStressCompactionFilterFactory : public CompactionFilterFactory {
   std::unique_ptr<CompactionFilter> CreateCompactionFilter(
       const CompactionFilter::Context& context) override {
     MutexLock state_mutex_guard(&state_mutex_);
-    return std::unique_ptr<CompactionFilter>(
-        new DbStressCompactionFilter(state_, context.column_family_id));
+    return std::unique_ptr<CompactionFilter>(new DbStressCompactionFilter(
+        state_, context.column_family_id, context));
   }
 
   const char* Name() const override {

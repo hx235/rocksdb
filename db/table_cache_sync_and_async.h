@@ -21,6 +21,9 @@ DEFINE_SYNC_AND_ASYNC(Status, TableCache::MultiGet)
  const std::shared_ptr<const SliceTransform>& prefix_extractor,
  HistogramImpl* file_read_hist, bool skip_filters, bool skip_range_deletions,
  int level, TypedHandle* handle) {
+  // std::cout << "[" << ioptions_.env->GetThreadID() << "]"
+  //           << " TableCache::MultiGetfd " << file_meta.fd.GetNumber()
+  //           << std::endl;
   auto& fd = file_meta.fd;
   Status s;
   TableReader* t = fd.table_reader;
@@ -29,6 +32,13 @@ DEFINE_SYNC_AND_ASYNC(Status, TableCache::MultiGet)
   if (handle != nullptr && t == nullptr) {
     t = cache_.Value(handle);
   }
+  // for (auto miter = table_range.begin(); miter != table_range.end(); ++miter)
+  // {
+  //   const Slice& user_key = miter->ukey_with_ts;
+  //   std::cout << "[" << ioptions_.env->GetThreadID() << "]"
+  //             << " TableCache::MultiGetkey " << user_key.ToString(true)
+  //             << std::endl;
+  // }
   autovector<std::string, MultiGetContext::MAX_BATCH_SIZE> row_cache_entries;
   IterKey row_cache_key;
   size_t row_cache_key_prefix_size = 0;

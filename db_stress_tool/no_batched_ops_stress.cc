@@ -477,6 +477,7 @@ class NonBatchedOpsStressTest : public StressTest {
     }
 
     ReadOptions read_opts_copy = read_opts;
+    read_opts_copy.snapshot = db_->GetSnapshot();
     std::string read_ts_str;
     Slice read_ts_slice;
     if (FLAGS_user_timestamp_size > 0) {
@@ -679,6 +680,18 @@ class NonBatchedOpsStressTest : public StressTest {
       }
       db_->MultiGet(readoptionscopy, cfh, num_keys, keys.data(), values.data(),
                     statuses.data());
+
+      std::string keys_str;
+      for (const auto& key : keys) {
+        keys_str += key.ToString(true);
+        keys_str += " ";
+      }
+      if (do_consistency_check) {
+        // std::cout << "[" << db_stress_env->GetThreadID() << "]"
+        //           << " Mutliget keys " << keys_str << " Snapshot Seq No: "
+        //           << readoptionscopy.snapshot->GetSequenceNumber() <<
+        //           std::endl;
+      }
       if (fault_fs_guard) {
         error_count = fault_fs_guard->GetAndResetErrorCount();
       }
@@ -787,8 +800,17 @@ class NonBatchedOpsStressTest : public StressTest {
               ThreadStatus::OperationType::OP_MULTIGET);
         } else {
           ThreadStatusUtil::SetThreadOperation(
-              ThreadStatus::OperationType::OP_GET);
+              ThreadStatus::OperationType::OP_UNKNOWN);
+          readoptionscopy.io_activity = Env::IOActivity::kSpecial;
           tmp_s = db_->Get(readoptionscopy, cfh, key, &value);
+          if (do_consistency_check) {
+            // std::cout << "[" << db_stress_env->GetThreadID() << "]"
+            //           << " Get key " << key.ToString(true)
+            //           << " Snapshot Seq No: "
+            //           << readoptionscopy.snapshot->GetSequenceNumber()
+            //           << std::endl;
+          }
+
           ThreadStatusUtil::SetThreadOperation(
               ThreadStatus::OperationType::OP_MULTIGET);
         }
@@ -805,11 +827,16 @@ class NonBatchedOpsStressTest : public StressTest {
           is_consistent = false;
         } else if (s.ok() && tmp_s.IsNotFound()) {
           fprintf(stderr,
-                  "MultiGet(%d) returned different results with key %s. "
+                  "[%" PRIu64
+                  "] MultiGet(%d) returned different results with key %s. "
+                  "Value: %s \n"
                   "Snapshot Seq No: %" PRIu64 "\n",
-                  column_family, key.ToString(true).c_str(),
+                  db_stress_env->GetThreadID(), column_family,
+                  key.ToString(true).c_str(),
+                  expected_value.ToString(true).c_str(),
                   readoptionscopy.snapshot->GetSequenceNumber());
-          fprintf(stderr, "MultiGet returned ok, Get returned not found\n");
+          fprintf(stderr, "MultiGet returned ok, Get returned not found %s\n",
+                  tmp_s.getState());
           is_consistent = false;
         } else if (s.ok() && value != expected_value.ToString()) {
           fprintf(stderr,
@@ -1506,6 +1533,9 @@ class NonBatchedOpsStressTest : public StressTest {
     }
     for (PendingExpectedValue& pending_expected_value :
          pending_expected_values) {
+      // std::cout << "[" << db_stress_env->GetThreadID() << "]"
+      //           << " Delete range " << key.ToString(true) << " "
+      //           << end_key.ToString(true) << std::endl;
       pending_expected_value.Commit();
     }
     thread->stats.AddRangeDeletions(1);
@@ -1543,6 +1573,7 @@ class NonBatchedOpsStressTest : public StressTest {
 
     assert(FLAGS_nooverwritepercent < 100);
     // Grab locks, set pending state on expected values, and add keys
+    std::string ingested_keys = "";
     for (int64_t key = key_base;
          s.ok() && key < shared->GetMaxKey() &&
          static_cast<int32_t>(keys.size()) < FLAGS_ingest_external_file_width;
@@ -1576,6 +1607,8 @@ class NonBatchedOpsStressTest : public StressTest {
         s = sst_file_writer.PutEntity(k, columns);
       } else {
         s = sst_file_writer.Put(k, v);
+        ingested_keys += k.ToString(true);
+        ingested_keys += " ";
       }
     }
 
@@ -1602,6 +1635,9 @@ class NonBatchedOpsStressTest : public StressTest {
         fprintf(stdout, "file ingestion error: %s\n", s.ToString().c_str());
       }
     } else {
+      // std::cout << "[" << db_stress_env->GetThreadID() << "]"
+      //           << " Ingested file " << sst_filename << " keys "
+      //           << ingested_keys << std::endl;
       for (PendingExpectedValue& pending_expected_value :
            pending_expected_values) {
         pending_expected_value.Commit();

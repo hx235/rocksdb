@@ -174,6 +174,33 @@ class FilePicker {
     }
   }
 
+  std::string Print() {
+    std::string str = "";
+    for (const auto& level_files : considered_files_) {
+      str += " Level: ";
+      str += std::to_string(level_files.first);
+      str += " Files: ";
+      for (const auto& file : level_files.second) {
+        str += std::to_string(file);
+        str += "";
+      }
+    }
+    return str;
+  }
+
+  std::string Print2() {
+    std::string str = "";
+    for (const auto& level_reason : considered_levels_) {
+      str += " Level: ";
+      str += std::to_string(level_reason.first);
+      str += " Reason: ";
+      for (const auto& reason : level_reason.second) {
+        str += std::to_string(reason);
+        str += "";
+      }
+    }
+    return str;
+  }
   int GetCurrentLevel() const { return curr_level_; }
 
   FdWithKeyRange* GetNextFile() {
@@ -181,6 +208,7 @@ class FilePicker {
       while (curr_index_in_curr_level_ < curr_file_level_->num_files) {
         // Loops over all files in current level.
         FdWithKeyRange* f = &curr_file_level_->files[curr_index_in_curr_level_];
+        considered_files_[curr_level_].push_back(f->fd.GetNumber());
         hit_file_level_ = curr_level_;
         is_hit_file_last_in_level_ =
             curr_index_in_curr_level_ == curr_file_level_->num_files - 1;
@@ -254,6 +282,8 @@ class FilePicker {
   bool IsHitFileLastInLevel() { return is_hit_file_last_in_level_; }
 
  private:
+  std::map<int, std::vector<int>> considered_files_;
+  std::map<int, std::vector<int>> considered_levels_;
   unsigned int num_levels_;
   unsigned int curr_level_;
   unsigned int returned_file_level_;
@@ -290,6 +320,7 @@ class FilePicker {
         search_left_bound_ = 0;
         search_right_bound_ = FileIndexer::kLevelMaxIndex;
         curr_level_++;
+        considered_levels_[curr_level_ - 1].push_back(1);
         continue;
       }
 
@@ -326,6 +357,7 @@ class FilePicker {
             search_left_bound_ = 0;
             search_right_bound_ = FileIndexer::kLevelMaxIndex;
             curr_level_++;
+            considered_levels_[curr_level_ - 1].push_back(2);
             continue;
           }
         } else {
@@ -335,6 +367,7 @@ class FilePicker {
           search_left_bound_ = 0;
           search_right_bound_ = FileIndexer::kLevelMaxIndex;
           curr_level_++;
+          considered_levels_[curr_level_ - 1].push_back(3);
           continue;
         }
       }
@@ -2563,7 +2596,35 @@ void Version::Get(const ReadOptions& read_options, const LookupKey& k,
     if (key_exists != nullptr) {
       *key_exists = false;
     }
-    *status = Status::NotFound();  // Use an empty error message for speed
+    if (read_options.snapshot &&
+        read_options.io_activity == Env::IOActivity::kSpecial) {
+      // std::cout << "[" << env_->GetThreadID() << "]"
+      //           << " Seqno " << read_options.snapshot->GetSequenceNumber()
+      //           << " Key " << user_key.ToString(true) << " Considered files"
+      //           << fp.Print() << " Considered levels " << fp.Print2()
+      //           << std::endl;
+
+      std::string info = "";
+      for (size_t i = 0; i < storage_info_.level_files_brief_.size(); ++i) {
+        info += "Level ";
+        info += std::to_string(i);
+        info += "Files ";
+        for (size_t j = 0; j < storage_info_.level_files_brief_[i].num_files;
+             ++j) {
+          info += std::to_string(
+              storage_info_.level_files_brief_[i].files[j].fd.GetNumber());
+          info += " ";
+        }
+      }
+      std::cout << "[" << env_->GetThreadID() << "]"
+                << " Seqno " << read_options.snapshot->GetSequenceNumber()
+                << " Key " << user_key.ToString(true) << " LSM " << info
+                << " Considered files" << fp.Print() << " Considered levels "
+                << fp.Print2() << std::endl;
+    }
+
+    *status = Status::NotFound(
+        "Special Not Found");  // Use an empty error message for speed
   }
 }
 

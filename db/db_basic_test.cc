@@ -15,6 +15,7 @@
 #include "rocksdb/filter_policy.h"
 #include "rocksdb/flush_block_policy.h"
 #include "rocksdb/merge_operator.h"
+#include "rocksdb/options.h"
 #include "rocksdb/perf_context.h"
 #include "rocksdb/table.h"
 #include "rocksdb/utilities/debug.h"
@@ -983,6 +984,7 @@ TEST_F(DBBasicTest, LearnMultiget) {
   ASSERT_OK(Put("k3", "v3"));
   ASSERT_OK(
       db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "k1", "k3"));
+  ASSERT_OK(Flush());
   SstFileWriter sst_file_writer(EnvOptions(), options);
   std::string f = dbname_ + "ingested_file.sst";
   ASSERT_OK(sst_file_writer.Open(f));

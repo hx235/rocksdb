@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "db/blob/blob_index.h"
+#include "db/dbformat.h"
 #include "db/memtable.h"
 #include "db/wide/wide_column_serialization.h"
 #include "db/wide/wide_columns_helper.h"
@@ -506,6 +507,7 @@ Status SstFileDumper::ReadSequential(bool print_kv, uint64_t read_num,
 
     ParsedInternalKey ikey;
     Status pik_status = ParseInternalKey(key, &ikey, true /* log_err_key */);
+    assert(ikey.type != kTypeRangeDeletion);
     if (!pik_status.ok()) {
       std::cerr << pik_status.getState() << "\n";
       continue;

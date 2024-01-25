@@ -432,6 +432,13 @@ Status TableCache::Get(
     const std::shared_ptr<const SliceTransform>& prefix_extractor,
     HistogramImpl* file_read_hist, bool skip_filters, int level,
     size_t max_file_size_for_l0_meta_pin) {
+  // std::cout << "[" << ioptions_.env->GetThreadID() << "]"
+  //           << " Seqno " << options.snapshot->GetSequenceNumber() << " Key "
+  //           << k.ToString(true) << " TableCache::Getfd "
+  //           << file_meta.fd.GetNumber() << std::endl;
+  // std::cout << "[" << ioptions_.env->GetThreadID() << "]"
+  //           << " TableCache::Getfd " << file_meta.fd.GetNumber()
+  //           << " TableCache::Getkey " << k.ToString(true) << std::endl;
   auto& fd = file_meta.fd;
   std::string* row_cache_entry = nullptr;
   bool done = false;
