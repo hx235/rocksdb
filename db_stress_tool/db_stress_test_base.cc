@@ -2428,8 +2428,21 @@ void StressTest::TestCompactRange(ThreadState* thread, int64_t rand_key,
   Status status = db_->CompactRange(cro, column_family, &start_key, &end_key);
 
   if (!status.ok()) {
-    fprintf(stdout, "Unable to perform CompactRange(): %s\n",
-            status.ToString().c_str());
+    // TOOD (hx235): allow an exact list of tolerable failures under stress test
+    bool non_ok_status_allowed =
+        status.IsManualCompactionPaused() ||
+        (status.getState() && std::strstr(status.getState(), "injected")) ||
+        status.IsAborted() || status.IsInvalidArgument() ||
+        status.IsNotSupported();
+    fprintf(non_ok_status_allowed ? stdout : stderr,
+            "Unable to perform CompactRange(): %s under specified "
+            "CompactRangeOptions: %s (Empty string or "
+            "missing field indicates default option or value is used)\n",
+            status.ToString().c_str(), compact_range_opt_oss.str().c_str());
+    if (!non_ok_status_allowed) {
+      // Fail fast to preserve the DB state.
+      thread->shared->SetVerificationFailure();
+    }
   }
 
   if (pre_snapshot != nullptr) {
