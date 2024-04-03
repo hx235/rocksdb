@@ -13,8 +13,11 @@
 #include "port/port.h"
 #include "port/stack_trace.h"
 #include "rocksdb/file_system.h"
+#include "rocksdb/options.h"
 #include "test_util/sync_point.h"
+#include "test_util/testharness.h"
 #include "util/udt_util.h"
+#include "utilities/backup/backup_engine_impl.h"
 #include "utilities/fault_injection_env.h"
 #include "utilities/fault_injection_fs.h"
 
@@ -135,6 +138,86 @@ class DBWALTestWithEnrichedEnv : public DBTestBase {
  protected:
   EnrichedSpecialEnv* enriched_env_;
 };
+
+TEST_F(DBWALTestWithEnrichedEnv, Bug) {
+  Options options = CurrentOptions();
+  options.create_if_missing = true;
+  options.track_and_verify_wals_in_manifest = true;
+  Reopen(options);
+
+  ASSERT_OK(dbfull()->Put(WriteOptions(), "first_log", "v"));
+  ASSERT_OK(dbfull()->TEST_SwitchMemtable());
+  ASSERT_OK(dbfull()->Put(WriteOptions(), "target_log", "v"));
+  // ASSERT_OK(dbfull()->TEST_SwitchMemtable());
+  ASSERT_OK(dbfull()->FlushWAL(true));
+  FlushOptions flush_options;
+  flush_options.allow_write_stall =true;
+  ASSERT_OK(db_->Flush(flush_options));
+  // BackupEngine* backup_engine = nullptr;
+  // const std::string backup_dir = dbname_ + "/.backup2";
+  // BackupEngineOptions backup_opts(backup_dir);
+  // Status s = BackupEngine::Open(options.env, backup_opts, &backup_engine);
+  // ASSERT_OK(s);
+  // CreateBackupOptions create_opts;
+  // s = backup_engine->CreateNewBackup(create_opts, db_);
+  // ASSERT_OK(s);
+}
+
+// TEST_F(DBWALTestWithEnrichedEnv, Bug) {
+//   Options options = CurrentOptions();
+//   options.create_if_missing = true;
+//   options.track_and_verify_wals_in_manifest = true;
+//   Reopen(options);
+
+
+//   ASSERT_OK(dbfull()->Put(WriteOptions(), "first_log", "v"));
+//   ASSERT_OK(dbfull()->Flush(FlushOptions()));
+//   ASSERT_OK(dbfull()->Put(WriteOptions(), "target_log", "v"));
+
+
+//   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+//       "DBImpl::FlushJob::WriteLevel0Table:Afterunlock",
+//       [&](void* /*arg*/) {
+//         BackupEngine* backup_engine = nullptr;
+//         const std::string backup_dir = dbname_ + "/.backup2";
+//         BackupEngineOptions backup_opts(backup_dir);
+//         Status s = BackupEngine::Open(options.env, backup_opts, &backup_engine);
+//         ASSERT_OK(s);
+//         CreateBackupOptions create_opts;
+//         s = backup_engine->CreateNewBackup(create_opts, db_);
+//         ASSERT_OK(s);
+//       });
+//   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+
+//   // t1 backup
+//   // ROCKSDB_NAMESPACE::port::Thread backup_t([&] {
+//   //   BackupEngine* backup_engine = nullptr;
+//   //   const std::string backup_dir = dbname_ + "/.backup2";
+//   //   BackupEngineOptions backup_opts(backup_dir);
+//   //   Status s = BackupEngine::Open(options.env, backup_opts, &backup_engine);
+//   //   ASSERT_OK(s);
+//   //   CreateBackupOptions create_opts;
+//   //   s = backup_engine->CreateNewBackup(create_opts, db_);
+//   //   ASSERT_OK(s);
+//   // });
+
+//   // t2 flush
+//   ROCKSDB_NAMESPACE::port::Thread flush_t([&] {
+//     ASSERT_OK(dbfull()->Flush(FlushOptions()));
+//   });
+
+//   // backup_t.join();
+//   flush_t.join();
+
+//   // BackupEngine* backup_engine = nullptr;
+//   // const std::string backup_dir = dbname_ + "/.backup2";
+//   // BackupEngineOptions backup_opts(backup_dir);
+//   // Status s = BackupEngine::Open(options.env, backup_opts, &backup_engine);
+//   // ASSERT_OK(s);
+//   // CreateBackupOptions create_opts;
+//   // s = backup_engine->CreateNewBackup(create_opts, db_);
+//   // ASSERT_OK(s);
+// }
 
 // Test that the recovery would successfully avoid the gaps between the logs.
 // One known scenario that could cause this is that the application issue the

@@ -860,6 +860,7 @@ Status FlushJob::WriteLevel0Table() {
     auto write_hint = cfd_->CalculateSSTWriteHint(0);
     Env::IOPriority io_priority = GetRateLimiterPriority();
     db_mutex_->Unlock();
+    TEST_SYNC_POINT_CALLBACK("DBImpl::FlushJob::WriteLevel0Table:Afterunlock", nullptr);
     if (log_buffer_) {
       log_buffer_->FlushBufferToLog();
     }
