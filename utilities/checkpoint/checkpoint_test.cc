@@ -961,6 +961,9 @@ TEST_F(CheckpointTest, PutRaceWithCheckpointTrackedWalSync) {
   // Ensure callback ran.
   ASSERT_EQ("val2", Get("key2"));
 
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+
   Close();
 
   // Simulate full loss of unsynced data. This drops "key2" -> "val2" from the

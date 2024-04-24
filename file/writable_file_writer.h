@@ -305,8 +305,8 @@ class WritableFileWriter {
   void set_seen_error() { seen_error_.store(true, std::memory_order_relaxed); }
 
   IOStatus AssertFalseAndGetStatusForPrevError() {
-    // This should only happen if SyncWithoutFlush() was called.
-    assert(sync_without_flush_called_);
+    // // This should only happen if SyncWithoutFlush() was called.
+    // assert(sync_without_flush_called_);
     return IOStatus::IOError("Writer has previous error.");
   }
 

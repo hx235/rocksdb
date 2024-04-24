@@ -1256,8 +1256,11 @@ struct DBOptions {
   bool avoid_flush_during_recovery = false;
 
   // By default RocksDB will flush all memtables on DB close if there are
-  // unpersisted data (i.e. with WAL disabled) The flush can be skip to speedup
-  // DB close. Unpersisted data WILL BE LOST.
+  // unpersisted data (i.e. with WAL disabled) or when WAL enabled, flush
+  // (if manual wal flush enabled) and sync all WALs.
+  // If true, These flush and sync will be skipped to speedup
+  // DB close. But unpersisted data will be lost and unsynced WALs can be
+  // lost upon a system crash after DB close.
   //
   // DEFAULT: false
   //

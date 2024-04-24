@@ -1681,11 +1681,9 @@ class DBImpl : public DB {
       return w;
     }
     Status ClearWriter() {
-      // TODO: plumb Env::IOActivity, Env::IOPriority
-      Status s = writer->WriteBuffer(WriteOptions());
       delete writer;
       writer = nullptr;
-      return s;
+      return Status::OK();
     }
 
     bool IsSyncing() { return getting_synced; }

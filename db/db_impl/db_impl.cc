@@ -631,13 +631,29 @@ Status DBImpl::CloseHelper() {
     for (auto l : logs_to_free_) {
       delete l;
     }
+  }
+  if (!mutable_db_options_.avoid_flush_during_shutdown && !logs_.empty()) {
+    mutex_.Unlock();
+    Status s = FlushWAL(true);
+    mutex_.Lock();
+    if (!s.ok()) {
+      ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                     "Unable to clear flush or sync WALs with error -- %s",
+                     s.ToString().c_str());
+      if (ret.ok()) {
+        ret = s;
+      }
+    }
+  }
+  {
+    InstrumentedMutexLock lock(&log_write_mutex_);
     for (auto& log : logs_) {
       uint64_t log_number = log.writer->get_log_number();
       Status s = log.ClearWriter();
       if (!s.ok()) {
         ROCKS_LOG_WARN(
             immutable_db_options_.info_log,
-            "Unable to Sync WAL file %s with error -- %s",
+            "Unable to clear writer for WAL %s with error -- %s",
             LogFileName(immutable_db_options_.GetWalDir(), log_number).c_str(),
             s.ToString().c_str());
         // Retain the first error

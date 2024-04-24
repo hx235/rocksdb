@@ -12,6 +12,7 @@
 // file data (or entire files) not protected by a "sync".
 
 #include "db/db_impl/db_impl.h"
+#include "db/db_test_util.h"
 #include "db/log_format.h"
 #include "db/version_set.h"
 #include "env/mock_env.h"
@@ -628,6 +629,47 @@ INSTANTIATE_TEST_CASE_P(
                       std::make_tuple(true, kDefault, kSyncWal),
                       std::make_tuple(false, kSyncWal, kEnd),
                       std::make_tuple(true, kSyncWal, kEnd)));
+
+class FaultInjectionFSTest : public DBTestBase {
+ public:
+  FaultInjectionFSTest()
+      : DBTestBase("fault_injection_fs_test", /*env_do_fsync=*/false) {
+    fault_fs_.reset(new FaultInjectionTestFS(env_->GetFileSystem()));
+    fault_env_.reset(new CompositeEnvWrapper(env_, fault_fs_));
+  }
+
+  std::shared_ptr<FaultInjectionTestFS> fault_fs_;
+  std::unique_ptr<Env> fault_env_;
+};
+
+TEST_F(FaultInjectionFSTest, SyncWALDuringDBClose) {
+  Options options;
+  options.create_if_missing = true;
+  options.avoid_flush_during_shutdown = true;
+  options.env = fault_env_.get();
+  std::string dbname1 = test::PerThreadDBPath("db_t_1");
+  ASSERT_OK(DestroyDB(dbname1, options));
+  DB* db1 = nullptr;
+  ASSERT_OK(DB::Open(options, dbname1, &db1));
+  ASSERT_OK(db1->Put(WriteOptions(), "k1", "v1"));
+  ASSERT_OK(db1->Close());
+  ASSERT_OK(DB::Open(options, dbname1, &db1));
+  std::string val;
+  Status s = db1->Get(ReadOptions(), "k1", &val);
+  ASSERT_TRUE(s.IsNotFound());
+
+  ASSERT_OK(db1->Close());
+  ASSERT_OK(DestroyDB(dbname1, options));
+  db1 = nullptr;
+  options.avoid_flush_during_shutdown = false;
+  ASSERT_OK(DB::Open(options, dbname1, &db1));
+  ASSERT_OK(db1->Put(WriteOptions(), "k1", "v1"));
+  ASSERT_OK(db1->Close());
+  ASSERT_OK(DB::Open(options, dbname1, &db1));
+  std::string val2;
+  s = db1->Get(ReadOptions(), "k1", &val2);
+  ASSERT_TRUE(s.ok());
+}
 
 }  // namespace ROCKSDB_NAMESPACE
 
