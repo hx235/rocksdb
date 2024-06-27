@@ -180,3 +180,10 @@ void SetupSyncPointsToMockDirectIO();
     }                                               \
   }
 #endif  // NDEBUG
+
+#ifdef NDEBUG
+#define SET_PERSIST_SEQNO(_seqno_)
+#else
+#define SET_PERSIST_SEQNO(_seqno_) \
+  { TEST_SYNC_POINT_CALLBACK("SetPersistSeqno", _seqno_); }
+#endif  // NDEBUG

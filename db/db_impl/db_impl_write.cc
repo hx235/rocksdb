@@ -1523,6 +1523,12 @@ IOStatus DBImpl::WriteToWAL(const WriteThread::WriteGroup& write_group,
       }
     }
   }
+
+#ifndef NDEBUG
+  if (io_s.ok()) {
+    SET_PERSIST_SEQNO(&sequence);
+  }
+#endif
   return io_s;
 }
 

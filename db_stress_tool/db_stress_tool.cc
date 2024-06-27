@@ -348,7 +348,7 @@ int db_stress_tool(int argc, char** argv) {
     key_gen_ctx.weights.emplace_back(key_gen_ctx.window -
                                      keys_per_level * (levels - 1));
   }
-  std::unique_ptr<ROCKSDB_NAMESPACE::SharedState> shared;
+  // std::unique_ptr<ROCKSDB_NAMESPACE::SharedState> shared;
   std::unique_ptr<ROCKSDB_NAMESPACE::StressTest> stress;
   if (FLAGS_test_cf_consistency) {
     stress.reset(CreateCfConsistencyStressTest());

@@ -101,6 +101,12 @@ StressTest::StressTest()
             s.ToString().c_str());
     exit(1);
   }
+
+#ifndef NDEBUG
+  SyncPoint::GetInstance()->SetCallBack("SetPersistSeqno",
+                                        SharedState2::SetPersistSeqno);
+  SyncPoint::GetInstance()->EnableProcessing();
+#endif  // NDEBUG
 }
 
 StressTest::~StressTest() {
@@ -4288,5 +4294,6 @@ void InitializeOptionsGeneral(
   }
 }
 
+thread_local SharedState* SharedState2::shared_state_ptr = shared.get();
 }  // namespace ROCKSDB_NAMESPACE
 #endif  // GFLAGS

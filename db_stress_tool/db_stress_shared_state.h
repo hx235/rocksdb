@@ -261,10 +261,12 @@ class SharedState {
   }
 
   void SetPersistSeqno(SequenceNumber seqno) {
+    MutexLock l(&persist_seqno_mu_);
     return expected_state_manager_->SetPersistSeqno(seqno);
   }
 
   SequenceNumber GetPersistSeqno() {
+    MutexLock l(&persist_seqno_mu_);
     return expected_state_manager_->GetPersistSeqno();
   }
 
@@ -430,6 +432,8 @@ class SharedState {
   std::vector<std::unique_ptr<port::Mutex[]>> key_locks_;
   std::atomic<bool> printing_verification_results_;
   const uint64_t start_timestamp_;
+
+  port::Mutex persist_seqno_mu_;
 };
 
 // Per-thread state for concurrent executions of the same benchmark.

@@ -395,5 +395,14 @@ void InitializeOptionsGeneral(
 // user-defined timestamp.
 void CheckAndSetOptionsForUserTimestamp(Options& options);
 
+class SharedState2 {
+ public:
+  static thread_local SharedState* shared_state_ptr;
+  static void SetPersistSeqno(void* arg) {
+    SequenceNumber seqno = *static_cast<SequenceNumber*>(arg);
+    shared_state_ptr->SetPersistSeqno(seqno);
+  }
+};
+
 }  // namespace ROCKSDB_NAMESPACE
 #endif  // GFLAGS
