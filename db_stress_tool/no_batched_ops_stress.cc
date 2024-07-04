@@ -1619,61 +1619,65 @@ class NonBatchedOpsStressTest : public StressTest {
 
     Status s;
 
-    if (FLAGS_use_put_entity_one_in > 0 &&
-        (value_base % FLAGS_use_put_entity_one_in) == 0) {
-      if (!FLAGS_use_txn) {
-        if (FLAGS_use_attribute_group) {
-          s = db_->PutEntity(write_opts, k,
-                             GenerateAttributeGroups({cfh}, value_base, v));
+    do {
+      if (!s.ok() && IsErrorInjectedAndRetryable(s)) {
+        // To wait for injected error to be cleared in auto-recovery
+        write_opts.no_slowdown = false;
+      }
+      if (FLAGS_use_put_entity_one_in > 0 &&
+          (value_base % FLAGS_use_put_entity_one_in) == 0) {
+        if (!FLAGS_use_txn) {
+          if (FLAGS_use_attribute_group) {
+            s = db_->PutEntity(write_opts, k,
+                               GenerateAttributeGroups({cfh}, value_base, v));
+          } else {
+            s = db_->PutEntity(write_opts, cfh, k,
+                               GenerateWideColumns(value_base, v));
+          }
         } else {
-          s = db_->PutEntity(write_opts, cfh, k,
-                             GenerateWideColumns(value_base, v));
+          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
+            return txn.PutEntity(cfh, k, GenerateWideColumns(value_base, v));
+          });
+        }
+      } else if (FLAGS_use_timed_put_one_in > 0 &&
+                 ((value_base + kLargePrimeForCommonFactorSkew) %
+                  FLAGS_use_timed_put_one_in) == 0) {
+        WriteBatch wb;
+        uint64_t write_unix_time = GetWriteUnixTime(thread);
+        s = wb.TimedPut(cfh, k, v, write_unix_time);
+        if (s.ok()) {
+          s = db_->Write(write_opts, &wb);
+        }
+      } else if (FLAGS_use_merge) {
+        if (!FLAGS_use_txn) {
+          if (FLAGS_user_timestamp_size == 0) {
+            s = db_->Merge(write_opts, cfh, k, v);
+          } else {
+            s = db_->Merge(write_opts, cfh, k, write_ts, v);
+          }
+        } else {
+          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
+            return txn.Merge(cfh, k, v);
+          });
         }
       } else {
-        s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-          return txn.PutEntity(cfh, k, GenerateWideColumns(value_base, v));
-        });
-      }
-    } else if (FLAGS_use_timed_put_one_in > 0 &&
-               ((value_base + kLargePrimeForCommonFactorSkew) %
-                FLAGS_use_timed_put_one_in) == 0) {
-      WriteBatch wb;
-      uint64_t write_unix_time = GetWriteUnixTime(thread);
-      s = wb.TimedPut(cfh, k, v, write_unix_time);
-      if (s.ok()) {
-        s = db_->Write(write_opts, &wb);
-      }
-    } else if (FLAGS_use_merge) {
-      if (!FLAGS_use_txn) {
-        if (FLAGS_user_timestamp_size == 0) {
-          s = db_->Merge(write_opts, cfh, k, v);
+        if (!FLAGS_use_txn) {
+          if (FLAGS_user_timestamp_size == 0) {
+            s = db_->Put(write_opts, cfh, k, v);
+          } else {
+            s = db_->Put(write_opts, cfh, k, write_ts, v);
+          }
         } else {
-          s = db_->Merge(write_opts, cfh, k, write_ts, v);
+          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
+            return txn.Put(cfh, k, v);
+          });
         }
-      } else {
-        s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-          return txn.Merge(cfh, k, v);
-        });
       }
-    } else {
-      if (!FLAGS_use_txn) {
-        if (FLAGS_user_timestamp_size == 0) {
-          s = db_->Put(write_opts, cfh, k, v);
-        } else {
-          s = db_->Put(write_opts, cfh, k, write_ts, v);
-        }
-      } else {
-        s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-          return txn.Put(cfh, k, v);
-        });
-      }
-    }
+    } while (!s.ok() && IsErrorInjectedAndRetryable(s));
 
     if (!s.ok()) {
       pending_expected_value.Rollback();
-      if (IsErrorInjectedAndRetryable(s)) {
-        return s;
-      } else if (FLAGS_inject_error_severity == 2) {
+      if (FLAGS_inject_error_severity == 2) {
         if (!is_db_stopped_ && s.severity() >= Status::Severity::kFatalError) {
           is_db_stopped_ = true;
         } else if (!is_db_stopped_ ||
@@ -1685,11 +1689,12 @@ class NonBatchedOpsStressTest : public StressTest {
         fprintf(stderr, "put or merge error: %s\n", s.ToString().c_str());
         thread->shared->SafeTerminate();
       }
+    } else {
+      pending_expected_value.Commit();
+      thread->stats.AddBytesForWrites(1, sz);
+      PrintKeyValue(rand_column_family, static_cast<uint32_t>(rand_key), value,
+                    sz);
     }
-    pending_expected_value.Commit();
-    thread->stats.AddBytesForWrites(1, sz);
-    PrintKeyValue(rand_column_family, static_cast<uint32_t>(rand_key), value,
-                  sz);
     return s;
   }
 
@@ -1717,23 +1722,27 @@ class NonBatchedOpsStressTest : public StressTest {
     if (shared->AllowsOverwrite(rand_key)) {
       PendingExpectedValue pending_expected_value =
           shared->PrepareDelete(rand_column_family, rand_key);
-      if (!FLAGS_use_txn) {
-        if (FLAGS_user_timestamp_size == 0) {
-          s = db_->Delete(write_opts, cfh, key);
-        } else {
-          s = db_->Delete(write_opts, cfh, key, write_ts);
+      do {
+        if (!s.ok() && IsErrorInjectedAndRetryable(s)) {
+          // To wait for injected error to be cleared in auto-recovery
+          write_opts.no_slowdown = false;
         }
-      } else {
-        s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-          return txn.Delete(cfh, key);
-        });
-      }
+        if (!FLAGS_use_txn) {
+          if (FLAGS_user_timestamp_size == 0) {
+            s = db_->Delete(write_opts, cfh, key);
+          } else {
+            s = db_->Delete(write_opts, cfh, key, write_ts);
+          }
+        } else {
+          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
+            return txn.Delete(cfh, key);
+          });
+        }
+      } while (!s.ok() && IsErrorInjectedAndRetryable(s));
 
       if (!s.ok()) {
         pending_expected_value.Rollback();
-        if (IsErrorInjectedAndRetryable(s)) {
-          return s;
-        } else if (FLAGS_inject_error_severity == 2) {
+        if (FLAGS_inject_error_severity == 2) {
           if (!is_db_stopped_ &&
               s.severity() >= Status::Severity::kFatalError) {
             is_db_stopped_ = true;
@@ -1746,29 +1755,34 @@ class NonBatchedOpsStressTest : public StressTest {
           fprintf(stderr, "delete error: %s\n", s.ToString().c_str());
           thread->shared->SafeTerminate();
         }
+      } else {
+        pending_expected_value.Commit();
+        thread->stats.AddDeletes(1);
       }
-      pending_expected_value.Commit();
-      thread->stats.AddDeletes(1);
     } else {
       PendingExpectedValue pending_expected_value =
           shared->PrepareSingleDelete(rand_column_family, rand_key);
-      if (!FLAGS_use_txn) {
-        if (FLAGS_user_timestamp_size == 0) {
-          s = db_->SingleDelete(write_opts, cfh, key);
-        } else {
-          s = db_->SingleDelete(write_opts, cfh, key, write_ts);
+      do {
+        if (!s.ok() && IsErrorInjectedAndRetryable(s)) {
+          // To wait for injected error to be cleared in auto-recovery
+          write_opts.no_slowdown = false;
         }
-      } else {
-        s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-          return txn.SingleDelete(cfh, key);
-        });
-      }
+        if (!FLAGS_use_txn) {
+          if (FLAGS_user_timestamp_size == 0) {
+            s = db_->SingleDelete(write_opts, cfh, key);
+          } else {
+            s = db_->SingleDelete(write_opts, cfh, key, write_ts);
+          }
+        } else {
+          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
+            return txn.SingleDelete(cfh, key);
+          });
+        }
+      } while (!s.ok() && IsErrorInjectedAndRetryable(s));
 
       if (!s.ok()) {
         pending_expected_value.Rollback();
-        if (IsErrorInjectedAndRetryable(s)) {
-          return s;
-        } else if (FLAGS_inject_error_severity == 2) {
+        if (FLAGS_inject_error_severity == 2) {
           if (!is_db_stopped_ &&
               s.severity() >= Status::Severity::kFatalError) {
             is_db_stopped_ = true;
@@ -1781,9 +1795,10 @@ class NonBatchedOpsStressTest : public StressTest {
           fprintf(stderr, "single delete error: %s\n", s.ToString().c_str());
           thread->shared->SafeTerminate();
         }
+      } else {
+        pending_expected_value.Commit();
+        thread->stats.AddSingleDeletes(1);
       }
-      pending_expected_value.Commit();
-      thread->stats.AddSingleDeletes(1);
     }
     return s;
   }
@@ -1824,21 +1839,27 @@ class NonBatchedOpsStressTest : public StressTest {
     std::string write_ts_str;
     Slice write_ts;
     Status s;
-    if (FLAGS_user_timestamp_size) {
-      write_ts_str = GetNowNanos();
-      write_ts = write_ts_str;
-      s = db_->DeleteRange(write_opts, cfh, key, end_key, write_ts);
-    } else {
-      s = db_->DeleteRange(write_opts, cfh, key, end_key);
-    }
+
+    do {
+      if (!s.ok() && IsErrorInjectedAndRetryable(s)) {
+        // To wait for injected error to be cleared in auto-recovery
+        write_opts.no_slowdown = false;
+      }
+      if (FLAGS_user_timestamp_size) {
+        write_ts_str = GetNowNanos();
+        write_ts = write_ts_str;
+        s = db_->DeleteRange(write_opts, cfh, key, end_key, write_ts);
+      } else {
+        s = db_->DeleteRange(write_opts, cfh, key, end_key);
+      }
+    } while (!s.ok() && IsErrorInjectedAndRetryable(s));
+
     if (!s.ok()) {
       for (PendingExpectedValue& pending_expected_value :
            pending_expected_values) {
         pending_expected_value.Rollback();
       }
-      if (IsErrorInjectedAndRetryable(s)) {
-        return s;
-      } else if (FLAGS_inject_error_severity == 2) {
+      if (FLAGS_inject_error_severity == 2) {
         if (!is_db_stopped_ && s.severity() >= Status::Severity::kFatalError) {
           is_db_stopped_ = true;
         } else if (!is_db_stopped_ ||
@@ -1850,13 +1871,14 @@ class NonBatchedOpsStressTest : public StressTest {
         fprintf(stderr, "delete range error: %s\n", s.ToString().c_str());
         thread->shared->SafeTerminate();
       }
+    } else {
+      for (PendingExpectedValue& pending_expected_value :
+           pending_expected_values) {
+        pending_expected_value.Commit();
+      }
+      thread->stats.AddRangeDeletions(1);
+      thread->stats.AddCoveredByRangeDeletions(covered);
     }
-    for (PendingExpectedValue& pending_expected_value :
-         pending_expected_values) {
-      pending_expected_value.Commit();
-    }
-    thread->stats.AddRangeDeletions(1);
-    thread->stats.AddCoveredByRangeDeletions(covered);
     return s;
   }
 
