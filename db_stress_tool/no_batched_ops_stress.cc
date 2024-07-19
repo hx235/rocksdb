@@ -7,6 +7,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
+#include <iostream>
 #include "db/dbformat.h"
 #include "db_stress_tool/db_stress_listener.h"
 #include "db_stress_tool/db_stress_shared_state.h"
@@ -1672,6 +1673,7 @@ class NonBatchedOpsStressTest : public StressTest {
     if (!s.ok()) {
       pending_expected_value.Rollback();
       if (IsErrorInjectedAndRetryable(s)) {
+        std::cout << "Rollback " << Slice(k).ToString(true) << " " << v.ToString(true) << " due to " << s.ToString() << std::endl;
         return s;
       } else if (FLAGS_inject_error_severity == 2) {
         if (!is_db_stopped_ && s.severity() >= Status::Severity::kFatalError) {
@@ -1687,6 +1689,7 @@ class NonBatchedOpsStressTest : public StressTest {
       }
     }
     pending_expected_value.Commit();
+    std::cout << "Commit " << Slice(k).ToString(true) << " " << v.ToString(true) << std::endl;
     thread->stats.AddBytesForWrites(1, sz);
     PrintKeyValue(rand_column_family, static_cast<uint32_t>(rand_key), value,
                   sz);
@@ -2390,6 +2393,7 @@ class NonBatchedOpsStressTest : public StressTest {
           fprintf(stderr, "Column family: %s, op_logs: %s\n",
                   cfh->GetName().c_str(), op_logs.c_str());
           thread->stats.AddErrors(1);
+          assert(false);
           break;
         }
 

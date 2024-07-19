@@ -2757,6 +2757,47 @@ TEST_F(DBWALTest, EmptyWalReopenTest) {
   }
 }
 
+TEST_F(DBWALTest, UnpublishedSeqno) {
+  Options options = CurrentOptions();
+  auto fault_fs = std::make_shared<FaultInjectionTestFS>(FileSystem::Default());
+  std::unique_ptr<Env> fault_fs_env(NewCompositeEnv(fault_fs));
+  options.env = fault_fs_env.get();
+  options.avoid_flush_during_shutdown = true;
+  DestroyAndReopen(options);
+  fault_fs->SetThreadLocalErrorContext(
+      FaultInjectionIOType::kWrite, 7 /* seed*/, 1 /* one_in */,
+      true /* retryable */, false /* has_data_loss*/);
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+    "BeforeApplyWALToManifest", [&](void* /* arg */) {
+      fault_fs->EnableThreadLocalErrorInjection(FaultInjectionIOType::kWrite);
+  });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+    "AfterApplyWALToManifest", [&](void* /* arg */) {
+      fault_fs->DisableThreadLocalErrorInjection(FaultInjectionIOType::kWrite);
+  });
+
+  ASSERT_OK(Put("ignore", "ignore"));
+  ASSERT_OK(dbfull()->TEST_SwitchWAL());
+  WriteOptions wo;
+  wo.sync = true;
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  Status s = Put("k", "v", wo);
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearAllCallBacks();
+  ASSERT_TRUE(s.IsIOError());
+  // can't see it
+  ASSERT_EQ("NOT_FOUND", Get("k"));
+
+  // Keep trying write until recovery of the previous IO error finishes
+  while (!s.ok()) {
+    options.env->SleepForMicroseconds(1000);
+    s = Put("ignore", "new_ignore");
+  }
+
+  ASSERT_EQ("v", Get("k"));
+  Destroy(options);
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

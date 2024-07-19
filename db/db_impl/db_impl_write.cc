@@ -385,6 +385,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
         }
       }
       versions_->SetLastSequence(last_sequence);
+      // std::cout << "SetLastSequence 1: " << last_sequence << std::endl;
       MemTableInsertStatusCheck(w.status);
       write_thread_.ExitAsBatchGroupFollower(&w);
     }
@@ -653,7 +654,9 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
       InstrumentedMutexLock l(&mutex_);
       // TODO: plumb Env::IOActivity, Env::IOPriority
       const ReadOptions read_options;
+      TEST_SYNC_POINT("BeforeApplyWALToManifest");
       status = ApplyWALToManifest(read_options, write_options, &synced_wals);
+      TEST_SYNC_POINT("AfterApplyWALToManifest");
     }
 
     // Requesting sync with two_write_queues_ is expected to be very rare. We
@@ -688,6 +691,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
       // Note: if we are to resume after non-OK statuses we need to revisit how
       // we reacts to non-OK statuses here.
       versions_->SetLastSequence(last_sequence);
+      // std::cout << "SetLastSequence 2: " << last_sequence << std::endl;
     }
     MemTableInsertStatusCheck(w.status);
     write_thread_.ExitAsBatchGroupLeader(write_group, status);

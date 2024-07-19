@@ -1465,7 +1465,7 @@ IOStatus FaultInjectionTestFS::MaybeInjectThreadLocalError(
       free(ctx->callstack);
     }
     ctx->callstack = port::SaveStack(&ctx->frames);
-    ctx->message = GetErrorMessageFromFaultInjectionIOType(type);
+    ctx->message = GetErrorMessageFromFaultInjectionIOType(type) + " " + file_name;
     ret = IOStatus::IOError(ctx->message);
     ret.SetRetryable(ctx->retryable);
     ret.SetDataLoss(ctx->has_data_loss);

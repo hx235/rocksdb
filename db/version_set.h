@@ -64,7 +64,7 @@
 #include "util/autovector.h"
 #include "util/coro_utils.h"
 #include "util/hash_containers.h"
-
+#include <iostream>
 namespace ROCKSDB_NAMESPACE {
 
 namespace log {
