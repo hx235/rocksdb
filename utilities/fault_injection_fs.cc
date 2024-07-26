@@ -168,8 +168,9 @@ IOStatus TestFSWritableFile::Append(const Slice& data, const IOOptions& options,
     return fs_->GetError();
   }
 
-  IOStatus s = fs_->MaybeInjectThreadLocalError(FaultInjectionIOType::kWrite,
-                                                options, state_.filename_);
+  IOStatus s = fs_->MaybeInjectThreadLocalError(
+      FaultInjectionIOType::kWrite, options, state_.filename_,
+      FaultInjectionTestFS::ErrorOperation::kAppend);
   if (!s.ok()) {
     return s;
   }
@@ -203,8 +204,9 @@ IOStatus TestFSWritableFile::Append(
     return IOStatus::Corruption("Data is corrupted!");
   }
 
-  IOStatus s = fs_->MaybeInjectThreadLocalError(FaultInjectionIOType::kWrite,
-                                                options, state_.filename_);
+  IOStatus s = fs_->MaybeInjectThreadLocalError(
+      FaultInjectionIOType::kWrite, options, state_.filename_,
+      FaultInjectionTestFS::ErrorOperation::kAppend);
   if (!s.ok()) {
     return s;
   }
@@ -266,8 +268,9 @@ IOStatus TestFSWritableFile::PositionedAppend(const Slice& data,
   if (fs_->ShouldDataCorruptionBeforeWrite()) {
     return IOStatus::Corruption("Data is corrupted!");
   }
-  IOStatus s = fs_->MaybeInjectThreadLocalError(FaultInjectionIOType::kWrite,
-                                                options, state_.filename_);
+  IOStatus s = fs_->MaybeInjectThreadLocalError(
+      FaultInjectionIOType::kWrite, options, state_.filename_,
+      FaultInjectionTestFS::ErrorOperation::kPositionedAppend);
   if (!s.ok()) {
     return s;
   }
@@ -292,8 +295,9 @@ IOStatus TestFSWritableFile::PositionedAppend(
   if (fs_->ShouldDataCorruptionBeforeWrite()) {
     return IOStatus::Corruption("Data is corrupted!");
   }
-  IOStatus s = fs_->MaybeInjectThreadLocalError(FaultInjectionIOType::kWrite,
-                                                options, state_.filename_);
+  IOStatus s = fs_->MaybeInjectThreadLocalError(
+      FaultInjectionIOType::kWrite, options, state_.filename_,
+      FaultInjectionTestFS::ErrorOperation::kPositionedAppend);
   if (!s.ok()) {
     return s;
   }
@@ -843,8 +847,9 @@ IOStatus FaultInjectionTestFS::NewWritableFile(
     return target()->NewWritableFile(fname, file_opts, result, dbg);
   }
 
-  IOStatus io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kWrite,
-                                              file_opts.io_options, fname);
+  IOStatus io_s = MaybeInjectThreadLocalError(
+      FaultInjectionIOType::kWrite, file_opts.io_options, fname,
+      FaultInjectionTestFS::ErrorOperation::kOpen);
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1465,7 +1470,7 @@ IOStatus FaultInjectionTestFS::MaybeInjectThreadLocalError(
       free(ctx->callstack);
     }
     ctx->callstack = port::SaveStack(&ctx->frames);
-    ctx->message = GetErrorMessageFromFaultInjectionIOType(type);
+    ctx->message = GetErrorMessage(type, file_name, op);
     ret = IOStatus::IOError(ctx->message);
     ret.SetRetryable(ctx->retryable);
     ret.SetDataLoss(ctx->has_data_loss);
