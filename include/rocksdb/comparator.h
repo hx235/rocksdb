@@ -175,6 +175,11 @@ class Comparator : public Customizable, public CompareInterface {
            CompareWithoutTimestamp(a, /*a_has_ts=*/true, b, /*b_has_ts=*/true);
   }
 
+  virtual std::string GetByteWiseSuccessorKey(const std::string&) const {
+    assert(false);
+    return "";
+  }
+
  private:
   size_t timestamp_size_;
 };

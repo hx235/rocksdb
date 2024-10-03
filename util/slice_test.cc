@@ -339,6 +339,35 @@ TEST(UnownedPtrTest, Tests) {
   }
 }
 
+TEST(ByteComparator, SucccessorKey) {
+  const Comparator* cmp = BytewiseComparator();
+  std::string key, succ, expected = "";
+
+  key = "";
+  succ = cmp->GetByteWiseSuccessorKey(key);
+  ASSERT_EQ(succ, "");
+
+  key = "\x00";
+  succ = cmp->GetByteWiseSuccessorKey(key);
+  ASSERT_EQ(succ, "");
+
+  key = "\xFF";
+  succ = cmp->GetByteWiseSuccessorKey(key);
+  ASSERT_EQ(succ, "");
+
+  key = "\x01\xFF";
+  succ = cmp->GetByteWiseSuccessorKey(key);
+  expected = "\x02";
+  ASSERT_EQ(succ, expected);
+  ASSERT_LT(cmp->Compare(key, succ), 0);
+
+  key = "\x01\x02\x03";
+  succ = cmp->GetByteWiseSuccessorKey(key);
+  expected = "\x01\x02\x04";
+  ASSERT_EQ(succ, expected);
+  ASSERT_LT(cmp->Compare(key, succ), 0);
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

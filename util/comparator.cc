@@ -145,6 +145,24 @@ class BytewiseComparatorImpl : public Comparator {
   bool EqualWithoutTimestamp(const Slice& a, const Slice& b) const override {
     return a == b;
   }
+
+  // Return the byte-wise successor of the given key or "" if no such successor
+  std::string GetByteWiseSuccessorKey(const std::string& key) const override {
+    char currChar;
+
+    // Starting from the end of key, find the first char
+    // that is not '\xff', increase it by 1 and discard all bytes after that
+    // char
+    for (int i = key.length() - 1; i >= 0; i--) {
+      currChar = key[i] + 1;
+      // To check whether the char before increment was '\xff'
+      if (currChar) {
+        return std::string(key.data(), i) + currChar;
+      }
+    }
+    // Return "" when the key is a run of '\xff' or an empty string
+    return "";
+  }
 };
 
 class ReverseBytewiseComparatorImpl : public BytewiseComparatorImpl {
