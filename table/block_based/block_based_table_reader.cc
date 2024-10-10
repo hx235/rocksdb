@@ -931,9 +931,16 @@ Status BlockBasedTable::PrefetchTail(
   Status s = file->PrepareIOOptions(ro, opts);
   // Try file system prefetch
   if (s.ok() && !file->use_direct_io() && !force_direct_prefetch) {
-    if (!file->Prefetch(opts, prefetch_off, prefetch_len).IsNotSupported()) {
+    Status temp_s = file->Prefetch(opts, prefetch_off, prefetch_len);
+    if (!temp_s.IsNotSupported()) {
       prefetch_buffer->reset(new FilePrefetchBuffer(
           ReadaheadParams(), false /* enable */, true /* track_min_offset */));
+      ROCKS_LOG_WARN(logger,
+                     "[%s] Failed system prefetch for table tail of size %zu "
+                     "at offset %zu: %s. Therefore each block in the tail will "
+                     "be read seperately later during table open.",
+                     file->file_name().c_str(), tail_prefetch_size,
+                     prefetch_off, s.ToString().c_str());
       return Status::OK();
     }
   }
