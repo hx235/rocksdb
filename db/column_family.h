@@ -299,6 +299,7 @@ class ColumnFamilyData {
  public:
   ~ColumnFamilyData();
 
+  bool scheduled_bottom_pri_compaction_ = false;
   // thread-safe
   uint32_t GetID() const { return id_; }
   // thread-safe

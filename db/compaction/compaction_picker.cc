@@ -1148,7 +1148,11 @@ Status CompactionPicker::SanitizeAndConvertCompactionInputFiles(
 }
 
 void CompactionPicker::RegisterCompaction(Compaction* c) {
-  if (c == nullptr) {
+  bool ignore_register = false;
+  TEST_SYNC_POINT_CALLBACK("CompactionPicker::RegisterCompaction:Ignore",
+                           &ignore_register);
+  if (c == nullptr || (ignore_register && !c->is_manual_compaction() &&
+                       c->bottommost_level())) {
     return;
   }
   assert(ioptions_.compaction_style != kCompactionStyleLevel ||

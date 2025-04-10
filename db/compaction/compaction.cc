@@ -72,6 +72,12 @@ void Compaction::FinalizeInputInfo(Version* _input_version) {
   cfd_->Ref();
   input_version_->Ref();
   edit_.SetColumnFamily(cfd_->GetID());
+
+  // First time intent
+  if (!is_manual_compaction_ && bottommost_level_ &&
+      !cfd_->scheduled_bottom_pri_compaction_) {
+    MarkFilesBeingCompacted(false);
+  }
 }
 
 void Compaction::GetBoundaryKeys(
@@ -348,6 +354,11 @@ Compaction::Compaction(
               : EvaluateProximalLevel(vstorage, mutable_cf_options_,
                                       immutable_options_, start_level_,
                                       output_level_)) {
+  // if (!is_manual_compaction_ && bottommost_level_) {
+  //   // MarkFilesBeingCompacted(false);
+  // } else {
+  //   MarkFilesBeingCompacted(true);
+  // }
   MarkFilesBeingCompacted(true);
   if (is_manual_compaction_) {
     compaction_reason_ = CompactionReason::kManualCompaction;

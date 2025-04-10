@@ -502,6 +502,135 @@ TEST_F(DBCompactionTest, SkipStatsUpdateTest) {
   SyncPoint::GetInstance()->DisableProcessing();
 }
 
+TEST_F(DBCompactionTest, BottomPriManualCompaction) {
+  // const int kNumFilesTrigger = 4;
+  Env::Default()->SetBackgroundThreads(1, Env::Priority::BOTTOM);
+  Options options = CurrentOptions();
+  options.compaction_style = kCompactionStyleUniversal;
+  options.num_levels = 4;
+  // options.write_buffer_size = 100 << 10;     // 100KB
+  // options.target_file_size_base = 32 << 10;  // 32KB
+  // options.level0_file_num_compaction_trigger = kNumFilesTrigger;
+  // Trigger compaction if size amplification exceeds 110%
+  // options.compaction_options_universal.max_size_amplification_percent = 110;
+  options.disable_auto_compactions = true;
+
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("bottom_file", "bottom_file"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("bottom_file", "bottom_file_2"));
+  ASSERT_OK(Flush());
+  CompactRangeOptions cro;
+  cro.change_level = true;
+  cro.target_level = 3;
+  // cro.bottommost_level_compaction = BottommostLevelCompaction::kForce;
+  ASSERT_OK(db_->CompactRange(cro, nullptr, nullptr));
+  ASSERT_EQ("0,0,0,1", FilesPerLevel());
+}
+
+TEST_F(DBCompactionTest, BottomPri) {
+  const int kNumFilesTrigger = 4;
+  Env::Default()->SetBackgroundThreads(1, Env::Priority::BOTTOM);
+  // Env::Default()->SetBackgroundThreads(2, Env::Priority::LOW);
+  Options options = CurrentOptions();
+  options.compaction_style = kCompactionStyleUniversal;
+  options.num_levels = 4;
+  options.write_buffer_size = 100 << 10;     // 100KB
+  options.target_file_size_base = 32 << 10;  // 32KB
+  options.level0_file_num_compaction_trigger = kNumFilesTrigger;
+  // Trigger compaction if size amplification exceeds 110%
+  options.compaction_options_universal.max_size_amplification_percent = 110;
+  options.max_background_jobs = 3;
+  // options.disable_auto_compactions = true;
+
+  DestroyAndReopen(options);
+
+  // int num_bottom_pri_compactions = 0;
+  // SyncPoint::GetInstance()->SetCallBack(
+  //     "DBImpl::BGWorkBottomCompaction",
+  //     [&](void* /*arg*/) { ++num_bottom_pri_compactions; });
+  // SyncPoint::GetInstance()->EnableProcessing();
+
+  ASSERT_OK(Put("bottom_file", "bottom_file"));
+  ASSERT_OK(Flush());
+  CompactRangeOptions cro;
+  cro.change_level = true;
+  cro.target_level = 3;
+  // cro.bottommost_level_compaction = BottommostLevelCompaction::kForce;
+  ASSERT_OK(db_->CompactRange(cro, nullptr, nullptr));
+  ASSERT_EQ("0,0,0,1", FilesPerLevel());
+
+  test::SleepingBackgroundTask sleeping_task_bottom;
+  env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask,
+                 &sleeping_task_bottom, Env::Priority::BOTTOM);
+  sleeping_task_bottom.WaitUntilSleeping();
+
+  // test::SleepingBackgroundTask sleeping_task_low;
+  // env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask,
+  // &sleeping_task_low,
+  //                Env::Priority::LOW);
+  // sleeping_task_low.WaitUntilSleeping();
+
+  int count = 0;
+  SyncPoint::GetInstance()->SetCallBack(
+      "DBImpl::BackgroundCompaction:IgnorePrepick", [&](void* arg) {
+        // bottom pri to check ignoreprepick
+        bool* ignore_prepicked = static_cast<bool*>(arg);
+        if (count == 1) {
+          *ignore_prepicked = true;
+        }
+        count++;
+      });
+
+  int count_1 = 0;
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionPicker::RegisterCompaction:Ignore", [&](void* arg) {
+        bool* ignore_register = static_cast<bool*>(arg);
+        // First time register, intent
+        if (count_1 == 0) {
+          *ignore_register = true;
+        }
+        count_1++;
+      });
+
+  SyncPoint::GetInstance()->SetCallBack(
+      "DBImpl::BackgroundCompaction:ForwardToBottomPriPool::Noprepick",
+      [&](void* arg) {
+        bool* no_prepick = static_cast<bool*>(arg);
+        *no_prepick = true;
+      });
+
+  int count_2 = 0;
+  SyncPoint::GetInstance()->SetCallBack(
+      "BackgroundCallCompaction:NoLock", [&](void* /* arg */) {
+        if (count_2 == 1) {
+          ASSERT_EQ("0,0,1,1", FilesPerLevel());
+          sleeping_task_bottom.WakeUp();
+          sleeping_task_bottom.WaitUntilDone();
+        }
+        count_2++;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+  Random rnd(301);
+  // GenerateNewFile: hack to generate overlapping files
+  for (int num = 1; num < kNumFilesTrigger; num++) {
+    ASSERT_EQ(NumSortedRuns(), num);
+    int key_idx = 0;
+    GenerateNewFile(&rnd, &key_idx);
+  }
+
+  while (count_2 != 3) {
+  }
+  // bottom pri can't trigger due to sorted run
+  ASSERT_EQ("0,0,1,1", FilesPerLevel());
+  // ASSERT_EQ(1, num_bottom_pri_compactions);
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+
+  Env::Default()->SetBackgroundThreads(0, Env::Priority::BOTTOM);
+}
+
 TEST_F(DBCompactionTest, TestTableReaderForCompaction) {
   Options options = CurrentOptions();
   options.env = env_;

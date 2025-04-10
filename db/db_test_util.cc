@@ -1404,7 +1404,7 @@ void DBTestBase::GenerateNewFile(int cf, Random* rnd, int* key_idx,
 void DBTestBase::GenerateNewFile(Random* rnd, int* key_idx, bool nowait) {
   for (int i = 0; i < KNumKeysByGenerateNewFile; i++) {
     ASSERT_OK(Put(Key(*key_idx), rnd->RandomString((i == 99) ? 1 : 990)));
-    (*key_idx)++;
+    // (*key_idx)++;
   }
   if (!nowait) {
     ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());

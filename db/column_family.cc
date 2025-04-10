@@ -1201,7 +1201,8 @@ void ColumnFamilyData::CreateNewMemtable(SequenceNumber earliest_seq) {
 
 bool ColumnFamilyData::NeedsCompaction() const {
   return !mutable_cf_options_.disable_auto_compactions &&
-         compaction_picker_->NeedsCompaction(current_->storage_info());
+         (compaction_picker_->NeedsCompaction(current_->storage_info()) ||
+          scheduled_bottom_pri_compaction_);
 }
 
 Compaction* ColumnFamilyData::PickCompaction(
@@ -1209,6 +1210,8 @@ Compaction* ColumnFamilyData::PickCompaction(
     const MutableDBOptions& mutable_db_options,
     const std::vector<SequenceNumber>& existing_snapshots,
     const SnapshotChecker* snapshot_checker, LogBuffer* log_buffer) {
+  compaction_picker_->scheduled_bottom_pri_compaction_ =
+      scheduled_bottom_pri_compaction_;
   auto* result = compaction_picker_->PickCompaction(
       GetName(), mutable_options, mutable_db_options, existing_snapshots,
       snapshot_checker, current_->storage_info(), log_buffer);

@@ -2955,7 +2955,7 @@ DBImpl::BGJobLimits DBImpl::GetBGJobLimits(int max_background_flushes,
   }
   if (!parallelize_compactions) {
     // throttle background compactions until we deem necessary
-    res.max_compactions = 1;
+    // res.max_compactions = 1;
   }
   return res;
 }
@@ -3107,8 +3107,9 @@ void DBImpl::BGWorkBottomCompaction(void* arg) {
   IOSTATS_SET_THREAD_POOL_ID(Env::Priority::BOTTOM);
   TEST_SYNC_POINT("DBImpl::BGWorkBottomCompaction");
   auto* prepicked_compaction = ca.prepicked_compaction;
-  assert(prepicked_compaction && prepicked_compaction->compaction);
-  ca.db->BackgroundCallCompaction(prepicked_compaction, Env::Priority::BOTTOM);
+  // assert(prepicked_compaction && prepicked_compaction->compaction);
+  ca.db->BackgroundCallCompaction(prepicked_compaction, Env::Priority::BOTTOM,
+                                  ca.prepicked_cfd);
   delete prepicked_compaction;
 }
 
@@ -3405,7 +3406,8 @@ void DBImpl::BackgroundCallFlush(Env::Priority thread_pri) {
 }
 
 void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
-                                      Env::Priority bg_thread_pri) {
+                                      Env::Priority bg_thread_pri,
+                                      ColumnFamilyData* prepicked_cfd) {
   bool made_progress = false;
   JobContext job_context(next_job_id_.fetch_add(1), true);
   TEST_SYNC_POINT("BackgroundCallCompaction:0");
@@ -3424,7 +3426,8 @@ void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
             bg_bottom_compaction_scheduled_) ||
            (bg_thread_pri == Env::Priority::LOW && bg_compaction_scheduled_));
     Status s = BackgroundCompaction(&made_progress, &job_context, &log_buffer,
-                                    prepicked_compaction, bg_thread_pri);
+                                    prepicked_compaction, bg_thread_pri,
+                                    prepicked_cfd);
     TEST_SYNC_POINT("BackgroundCallCompaction:1");
     if (s.IsBusy()) {
       bg_cv_.SignalAll();  // In case a waiter can proceed despite the error
@@ -3525,6 +3528,7 @@ void DBImpl::BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
     // that case, all DB variables will be dealloacated and referencing them
     // will cause trouble.
   }
+  TEST_SYNC_POINT("BackgroundCallCompaction:NoLock");
 }
 
 // Precondition: mutex_ must be held when calling this function.
@@ -3532,7 +3536,8 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
                                     JobContext* job_context,
                                     LogBuffer* log_buffer,
                                     PrepickedCompaction* prepicked_compaction,
-                                    Env::Priority thread_pri) {
+                                    Env::Priority thread_pri,
+                                    ColumnFamilyData* prepicked_cfd) {
   ManualCompactionState* manual_compaction =
       prepicked_compaction == nullptr
           ? nullptr
@@ -3546,8 +3551,12 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
 
   bool is_manual = (manual_compaction != nullptr);
   std::unique_ptr<Compaction> c;
+
+  bool ignore_prepicked = false;
+  TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundCompaction:IgnorePrepick",
+                           &ignore_prepicked);
   if (prepicked_compaction != nullptr &&
-      prepicked_compaction->compaction != nullptr) {
+      prepicked_compaction->compaction != nullptr && !ignore_prepicked) {
     c.reset(prepicked_compaction->compaction);
   }
   bool is_prepicked = is_manual || c;
@@ -3644,7 +3653,7 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
                  : m->manual_end->DebugString(true).c_str()));
       }
     }
-  } else if (!is_prepicked && !compaction_queue_.empty()) {
+  } else if (!is_prepicked && (prepicked_cfd || !compaction_queue_.empty())) {
     if (HasExclusiveManualCompaction()) {
       // Can't compact right now, but try again later
       TEST_SYNC_POINT("DBImpl::BackgroundCompaction()::Conflict");
@@ -3655,7 +3664,13 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       return Status::OK();
     }
 
-    auto cfd = PickCompactionFromQueue(&task_token, log_buffer);
+    ColumnFamilyData* cfd = nullptr;
+    if (prepicked_cfd) {
+      cfd = prepicked_cfd;
+    } else {
+      cfd = PickCompactionFromQueue(&task_token, log_buffer);
+    }
+
     if (cfd == nullptr) {
       // Can't find any executable task from the compaction queue.
       // All tasks have been throttled by compaction thread limiter.
@@ -3696,6 +3711,9 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
                            &earliest_write_conflict_snapshot,
                            &snapshot_checker);
         assert(is_snapshot_supported_ || snapshots_.empty());
+      }
+      if (thread_pri == Env::Priority::BOTTOM) {
+        cfd->scheduled_bottom_pri_compaction_ = false;
       }
       c.reset(cfd->PickCompaction(mutable_cf_options, mutable_db_options_,
                                   snapshot_seqs, snapshot_checker, log_buffer));
@@ -3881,7 +3899,8 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     ThreadStatusUtil::ResetThreadStatus();
     TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundCompaction:AfterCompaction",
                              c->column_family_data());
-  } else if (!is_prepicked && c->output_level() > 0 &&
+  } else if (thread_pri != Env::Priority::BOTTOM && !is_prepicked &&
+             c->output_level() > 0 &&
              c->output_level() ==
                  c->column_family_data()
                      ->current()
@@ -3896,15 +3915,30 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     CompactionArg* ca = new CompactionArg;
     ca->db = this;
     ca->compaction_pri_ = Env::Priority::BOTTOM;
-    ca->prepicked_compaction = new PrepickedCompaction;
-    ca->prepicked_compaction->compaction = c.release();
-    ca->prepicked_compaction->manual_compaction_state = nullptr;
-    // Transfer requested token, so it doesn't need to do it again.
-    ca->prepicked_compaction->task_token = std::move(task_token);
-    ++bg_bottom_compaction_scheduled_;
+    bool no_prepick = false;
+    TEST_SYNC_POINT_CALLBACK(
+        "DBImpl::BackgroundCompaction:ForwardToBottomPriPool::Noprepick",
+        &no_prepick);
+    if (!no_prepick) {
+      ca->prepicked_compaction = new PrepickedCompaction;
+      ca->prepicked_compaction->compaction = c.release();
+      ca->prepicked_compaction->manual_compaction_state = nullptr;
+      // Transfer requested token, so it doesn't need to do it again.
+      ca->prepicked_compaction->task_token = std::move(task_token);
+    } else {
+      ca->prepicked_cfd = c->column_family_data();
+      ca->prepicked_compaction = nullptr;
+      c->column_family_data()->scheduled_bottom_pri_compaction_ = true;
+      AddToCompactionQueue(c->column_family_data());
+      MaybeScheduleFlushOrCompaction();
+      c.reset();
+    }
     assert(c == nullptr);
+    ++bg_bottom_compaction_scheduled_;
+
     env_->Schedule(&DBImpl::BGWorkBottomCompaction, ca, Env::Priority::BOTTOM,
                    this, &DBImpl::UnscheduleCompactionCallback);
+
   } else {
     TEST_SYNC_POINT_CALLBACK("DBImpl::BackgroundCompaction:BeforeCompaction",
                              c->column_family_data());
@@ -4010,7 +4044,6 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
 
   if (status.ok() || status.IsCompactionTooLarge() ||
       status.IsManualCompactionPaused()) {
-    // Done
   } else if (status.IsColumnFamilyDropped() || status.IsShutdownInProgress()) {
     // Ignore compaction errors found during shutting down
   } else {
