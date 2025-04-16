@@ -1198,6 +1198,33 @@ void BlockBasedTableBuilder::WriteBlock(const Slice& uncompressed_block_data,
   if (!ok()) {
     return;
   }
+  if (is_data_block) {
+    // Verify block
+    // Cheaper with no string copy
+    auto get_iterator_for_block = [&r](std::string data_block) {
+      assert(!data_block.empty());
+      Block reader{BlockContents{data_block}};
+      DataBlockIter* iter = reader.NewDataIterator(
+          r->internal_comparator.user_comparator(),
+          kDisableGlobalSequenceNumber, nullptr /* iter */, nullptr /* stats */,
+          false /*  block_contents_pinned */,
+          r->persist_user_defined_timestamps);
+
+      iter->SeekToFirst();
+      assert(iter->Valid());
+      return std::unique_ptr<DataBlockIter>(iter);
+    };
+
+    std::unique_ptr<DataBlockIter> iter =
+        get_iterator_for_block(uncompressed_block_data.ToString());
+    // std::unique_ptr<DataBlockIter> iter =
+    //     get_iterator_for_block(r->compressed_output);
+    uint64_t count = 0;
+    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+      count++;
+    }
+    assert(count > 0);
+  }
 
   TEST_SYNC_POINT_CALLBACK(
       "BlockBasedTableBuilder::WriteBlock:TamperWithCompressedData",
