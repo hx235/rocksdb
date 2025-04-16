@@ -745,6 +745,14 @@ TEST_F(CorruptionTest, UnrelatedKeys) {
 }
 
 TEST_F(CorruptionTest, RangeDeletionCorrupted) {
+  // ASSERT_OK(db_->Put(WriteOptions(), "x", "value_1"));
+
+  // ASSERT_OK(db_->Put(WriteOptions(), "z", "value_1"));
+  // ASSERT_OK(db_->SingleDelete(WriteOptions(), "z"));
+
+  // ASSERT_OK(db_->Put(WriteOptions(), "b", "value_1"));
+  // ASSERT_OK(db_->Delete(WriteOptions(), "b"));
+
   ASSERT_OK(
       db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "a", "b"));
   ASSERT_OK(db_->Flush(FlushOptions()));

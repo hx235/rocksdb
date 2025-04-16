@@ -887,7 +887,7 @@ Status FlushJob::WriteLevel0Table() {
     ro.total_order_seek = true;
     ro.io_activity = Env::IOActivity::kFlush;
     Arena arena;
-    uint64_t total_num_entries = 0, total_num_deletes = 0;
+    uint64_t total_num_input_entries = 0, total_num_deletes = 0;
     uint64_t total_data_size = 0;
     size_t total_memory_usage = 0;
     uint64_t total_num_range_deletes = 0;
@@ -922,7 +922,7 @@ Status FlushJob::WriteLevel0Table() {
       if (range_del_iter != nullptr) {
         range_del_iters.emplace_back(range_del_iter);
       }
-      total_num_entries += m->NumEntries();
+      total_num_input_entries += m->NumEntries();
       total_num_deletes += m->NumDeletion();
       total_data_size += m->GetDataSize();
       total_memory_usage += m->ApproximateMemoryUsage();
@@ -934,11 +934,12 @@ Status FlushJob::WriteLevel0Table() {
     //  "Write Buffer Full", should make update flush_reason_ accordingly.
     event_logger_->Log() << "job" << job_context_->job_id << "event"
                          << "flush_started" << "num_memtables" << mems_.size()
-                         << "num_entries" << total_num_entries << "num_deletes"
-                         << total_num_deletes << "total_data_size"
-                         << total_data_size << "memory_usage"
-                         << total_memory_usage << "num_range_deletes"
-                         << total_num_range_deletes << "flush_reason"
+                         << "num_input_entries" << total_num_input_entries
+                         << "num_deletes" << total_num_deletes
+                         << "total_data_size" << total_data_size
+                         << "memory_usage" << total_memory_usage
+                         << "num_range_deletes" << total_num_range_deletes
+                         << "flush_reason"
                          << GetFlushReasonString(flush_reason_);
 
     {
@@ -1001,6 +1002,8 @@ Status FlushJob::WriteLevel0Table() {
       const SequenceNumber job_snapshot_seq =
           job_context_->GetJobSnapshotSequence();
 
+      uint64_t num_output_entries = 0;
+
       s = BuildTable(
           dbname_, versions_, db_options_, tboptions, file_options_,
           cfd_->table_cache(), iter.get(), std::move(range_del_iters), &meta_,
@@ -1011,13 +1014,15 @@ Status FlushJob::WriteLevel0Table() {
           BlobFileCreationReason::kFlush, seqno_to_time_mapping_.get(),
           event_logger_, job_context_->job_id, &table_properties_, write_hint,
           full_history_ts_low, blob_callback_, base_, &num_input_entries,
-          &memtable_payload_bytes, &memtable_garbage_bytes);
+          &memtable_payload_bytes, &memtable_garbage_bytes,
+          &num_output_entries);
       TEST_SYNC_POINT_CALLBACK("FlushJob::WriteLevel0Table:s", &s);
       // TODO: Cleanup io_status in BuildTable and table builders
       assert(!s.ok() || io_s.ok());
       io_s.PermitUncheckedError();
-      if (num_input_entries != total_num_entries && s.ok()) {
-        std::string msg = "Expected " + std::to_string(total_num_entries) +
+      if (num_input_entries != total_num_input_entries && s.ok()) {
+        std::string msg = "Expected " +
+                          std::to_string(total_num_input_entries) +
                           " entries in memtables, but read " +
                           std::to_string(num_input_entries);
         ROCKS_LOG_WARN(db_options_.info_log, "[%s] [JOB %d] Level-0 flush %s",
@@ -1026,6 +1031,10 @@ Status FlushJob::WriteLevel0Table() {
         if (db_options_.flush_verify_memtable_count) {
           s = Status::Corruption(msg);
         }
+      }
+
+      if (s.ok() && table_properties_.num_entries != num_output_entries) {
+        assert(false);
       }
       if (tboptions.reason == TableFileCreationReason::kFlush) {
         TEST_SYNC_POINT("DBImpl::FlushJob:Flush");

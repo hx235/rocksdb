@@ -2073,18 +2073,20 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
       Version* version = cfd->current();
       version->Ref();
       uint64_t num_input_entries = 0;
-      s = BuildTable(dbname_, versions_.get(), immutable_db_options_, tboptions,
-                     file_options_for_compaction_, cfd->table_cache(),
-                     iter.get(), std::move(range_del_iters), &meta,
-                     &blob_file_additions, snapshot_seqs, earliest_snapshot,
-                     earliest_write_conflict_snapshot, kMaxSequenceNumber,
-                     snapshot_checker, paranoid_file_checks,
-                     cfd->internal_stats(), &io_s, io_tracer_,
-                     BlobFileCreationReason::kRecovery,
-                     nullptr /* seqno_to_time_mapping */, &event_logger_,
-                     job_id, nullptr /* table_properties */, write_hint,
-                     nullptr /*full_history_ts_low*/, &blob_callback_, version,
-                     &num_input_entries);
+      uint64_t num_output_entries = 0;
+      TableProperties temp_table_proerties;
+      s = BuildTable(
+          dbname_, versions_.get(), immutable_db_options_, tboptions,
+          file_options_for_compaction_, cfd->table_cache(), iter.get(),
+          std::move(range_del_iters), &meta, &blob_file_additions,
+          snapshot_seqs, earliest_snapshot, earliest_write_conflict_snapshot,
+          kMaxSequenceNumber, snapshot_checker, paranoid_file_checks,
+          cfd->internal_stats(), &io_s, io_tracer_,
+          BlobFileCreationReason::kRecovery,
+          nullptr /* seqno_to_time_mapping */, &event_logger_, job_id,
+          &temp_table_proerties /* table_properties */, write_hint,
+          nullptr /*full_history_ts_low*/, &blob_callback_, version,
+          &num_input_entries, nullptr, nullptr, &num_output_entries);
       version->Unref();
       LogFlush(immutable_db_options_.info_log);
       ROCKS_LOG_DEBUG(immutable_db_options_.info_log,
@@ -2110,6 +2112,9 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
         if (immutable_db_options_.flush_verify_memtable_count) {
           s = Status::Corruption(msg);
         }
+      }
+      if (s.ok() && temp_table_proerties.num_entries != num_output_entries) {
+        assert(false);
       }
     }
   }
