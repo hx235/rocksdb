@@ -161,25 +161,28 @@ class UniversalCompactionBuilder {
   // write stop with a few more flushes.
   //
   // Such exclusion is based on `num_l0_input_pre_exclusion`,
-  // `level0_stop_writes_trigger`, `max/min_merge_width` and the pre-exclusion
-  // compaction score. Noted that it will not make the size amp compaction of
+  // `level0_stop_writes_trigger`, `max/min_merge_width` and the
+  // `max_size_amplification_percent`
+  //
+  // Noted that it will not make the size amp compaction of
   // interest invalid from running as a size amp compaction as long as its
-  // pre-exclusion compaction score satisfies the condition to run.
+  // pre-exclusion compaction score satisfies the condition to run
   //
   // @param `num_l0_input_pre_exclusion` Number of L0 input files prior to
   // exclusion
   // @param `end_index` Index of the last sorted run selected as compaction
-  // input. Will not be affected by this exclusion.
+  // input.
   // @param `start_index` Index of the first input sorted run prior to
   // exclusion. Will be modified as output based on the exclusion.
   // @param `candidate_size` Total size of all except for the last input sorted
   // runs prior to exclusion. Will be modified as output based on the exclusion.
-  //
+  // @param `max_size_amplification_percent` max_size_amplification_percent
   // @return Number of L0 files to exclude. `start_index` and
   // `candidate_size` will be modified accordingly
   std::size_t MightExcludeNewL0sToReduceWriteStop(
       std::size_t num_l0_input_pre_exclusion, std::size_t end_index,
-      std::size_t& start_index, uint64_t& candidate_size) const {
+      std::size_t& start_index, uint64_t& candidate_size,
+      uint64_t max_size_amplification_percent) const {
     if (num_l0_input_pre_exclusion == 0) {
       return 0;
     }
@@ -192,9 +195,6 @@ class UniversalCompactionBuilder {
         mutable_cf_options_.compaction_options_universal.max_merge_width);
     const std::size_t min_merge_width = static_cast<std::size_t>(
         mutable_cf_options_.compaction_options_universal.min_merge_width);
-    const uint64_t max_size_amplification_percent =
-        mutable_cf_options_.compaction_options_universal
-            .max_size_amplification_percent;
     const uint64_t base_sr_size = sorted_runs_[end_index].size;
 
     // Leave at least 1 L0 file and 2 input sorted runs after exclusion
@@ -220,24 +220,49 @@ class UniversalCompactionBuilder {
     std::size_t num_l0_to_exclude = 0;
     uint64_t candidate_size_post_exclusion = candidate_size;
 
+    std::ostringstream oss;
+    oss << "Attempt to exclude L0 files from size amplification "
+           "compaction."
+        << " Lower bound number to exclude: "
+        << num_l0_to_exclude_for_min_merge_width
+        << " Upper bound number to exclude: "
+        << num_l0_to_exclude_for_max_merge_width
+        << " Calculated based on following variables:"
+        << " max_num_l0_to_exclude (to keep at least 1 L0 file and 2 sorted "
+           "runs): "
+        << max_num_l0_to_exclude
+        << " level0_stop_writes_trigger: " << level0_stop_writes_trigger
+        << " num_extra_l0_before_write_stop: " << num_extra_l0_before_write_stop
+        << " max_merge_width: " << max_merge_width
+        << " min_merge_width: " << min_merge_width << "\n";
+    ROCKS_LOG_BUFFER(log_buffer_, "[%s] %s", cf_name_.c_str(),
+                     oss.str().c_str());
+
     for (std::size_t possible_num_l0_to_exclude =
              num_l0_to_exclude_for_min_merge_width;
          possible_num_l0_to_exclude <= num_l0_to_exclude_for_max_merge_width;
          ++possible_num_l0_to_exclude) {
       uint64_t current_candidate_size = candidate_size_post_exclusion;
+
+      // To calculate the size of the candidate compaction after excluding
+      // `possible_num_l0_to_exclude` L0 files
+      // TODO (hx235): optimize this by subtracting file size from
+      // `current_candidate_size` of last `possible_num_l0_to_exclude` in the
+      // iteration
       for (std::size_t j = num_l0_to_exclude; j < possible_num_l0_to_exclude;
            ++j) {
         current_candidate_size -=
             sorted_runs_.at(start_index + j).compensated_file_size;
       }
 
-      // To ensure the compaction score before and after exclusion is similar
-      // so this exclusion will not make the size amp compaction of
-      // interest invalid from running as a size amp compaction as long as its
-      // pre-exclusion compaction score satisfies the condition to run.
+      // To ensure compaction score after L0 file exclusion still meets the
+      // threshold to trigger size amp compaction
       if (current_candidate_size * 100 <
-              max_size_amplification_percent * base_sr_size ||
-          current_candidate_size < candidate_size * 9 / 10) {
+          max_size_amplification_percent * base_sr_size) {
+        ROCKS_LOG_BUFFER(log_buffer_,
+                         "[%s] Stop attempting to excluding %" ROCKSDB_PRIszt
+                         " L0 files due to size amplification threshold \n",
+                         cf_name_.c_str(), num_l0_to_exclude);
         break;
       }
       num_l0_to_exclude = possible_num_l0_to_exclude;
@@ -1063,9 +1088,13 @@ Compaction* UniversalCompactionBuilder::PickCompactionToReduceSizeAmp() {
     return nullptr;
   }
 
-  {
+  // Percentage flexibility while reducing size amplification
+  const uint64_t ratio = mutable_cf_options_.compaction_options_universal
+                             .max_size_amplification_percent;
+
+  if (candidate_size * 100 >= ratio * base_sr_size) {
     const size_t num_l0_to_exclude = MightExcludeNewL0sToReduceWriteStop(
-        num_l0_files, end_index, start_index, candidate_size);
+        num_l0_files, end_index, start_index, candidate_size, ratio);
     ROCKS_LOG_BUFFER(log_buffer_,
                      "[%s] Universal: Excluding %" ROCKSDB_PRIszt
                      " latest L0 files to reduce potential write stop "
@@ -1081,10 +1110,6 @@ Compaction* UniversalCompactionBuilder::PickCompactionToReduceSizeAmp() {
         "[%s] Universal: First candidate %s[%" ROCKSDB_PRIszt "] %s",
         cf_name_.c_str(), file_num_buf, start_index, " to reduce size amp.\n");
   }
-
-  // percentage flexibility while reducing size amplification
-  const uint64_t ratio = mutable_cf_options_.compaction_options_universal
-                             .max_size_amplification_percent;
 
   // size amplification = percentage of additional size
   if (candidate_size * 100 < ratio * base_sr_size) {
