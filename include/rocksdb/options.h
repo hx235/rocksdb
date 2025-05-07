@@ -2053,6 +2053,7 @@ struct ReadOptions {
 
   // *** END options for RocksDB internal use only ***
 
+  bool is_data_block = false;
   ReadOptions() {}
   ReadOptions(bool _verify_checksums, bool _fill_cache);
   explicit ReadOptions(Env::IOActivity _io_activity);

@@ -142,6 +142,8 @@ struct IOOptions {
   // EXPERIMENTAL
   Env::IOActivity io_activity = Env::IOActivity::kUnknown;
 
+  bool is_data_block = false;
+
   IOOptions() : IOOptions(false) {}
 
   explicit IOOptions(bool force_dir_fsync_)

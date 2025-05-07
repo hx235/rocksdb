@@ -47,6 +47,8 @@
 #include "rocksdb/env.h"
 #include "rocksdb/experimental.h"
 #include "rocksdb/filter_policy.h"
+#include "rocksdb/flush_block_policy.h"
+#include "rocksdb/iostats_context.h"
 #include "rocksdb/options.h"
 #include "rocksdb/perf_context.h"
 #include "rocksdb/slice.h"
@@ -773,6 +775,125 @@ TEST_F(DBTest, ReadFromPersistedTier) {
   } while (ChangeOptions());
 }
 
+class TenKeyFlushBlockPolicy : public FlushBlockPolicy {
+ public:
+  explicit TenKeyFlushBlockPolicy(const int num_keys_in_block)
+      : num_keys_in_block_(num_keys_in_block), num_keys_(0) {}
+
+  bool Update(const Slice& /*key*/, const Slice& /*value*/) override {
+    // Flush every 10 keys
+    if (num_keys_ == num_keys_in_block_) {
+      num_keys_ = 1;
+      return true;
+    }
+    num_keys_++;
+    return false;
+  }
+
+ private:
+  const int num_keys_in_block_;
+  int num_keys_;
+};
+
+class TenKeyFlushBlockPolicyFactory : public FlushBlockPolicyFactory {
+ public:
+  explicit TenKeyFlushBlockPolicyFactory(const int num_keys_in_block = 10)
+      : num_keys_in_block_(num_keys_in_block) {}
+
+  virtual const char* Name() const override {
+    return "TenKeyFlushBlockPolicyFactory";
+  }
+
+  virtual FlushBlockPolicy* NewFlushBlockPolicy(
+      const BlockBasedTableOptions& /*table_options*/,
+      const BlockBuilder& /* data_block_builder */) const override {
+    return new TenKeyFlushBlockPolicy(num_keys_in_block_);
+  }
+
+ private:
+  const int num_keys_in_block_;
+};
+
+TEST_F(DBTest, MeasureCompression) {
+  CompressionType compressions[] = {kNoCompression, kSnappyCompression,
+                                    kLZ4Compression, kLZ4HCCompression};
+  for (auto comp : compressions) {
+    if (!CompressionTypeSupported(comp)) {
+      continue;
+    }
+
+    Options options = CurrentOptions();
+    options.disable_auto_compactions = true;
+    options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
+    options.statistics->set_stats_level(StatsLevel::kExceptTimeForMutex);
+    // Force compression
+    options.compression_opts.max_compressed_bytes_per_kb = 1024;
+    options.info_log = nullptr;
+    options.compression = comp;
+    std::cout << " " << std::endl;
+    std::cout << "Compression type: " << CompressionTypeToString(comp)
+              << std::endl;
+    BlockBasedTableOptions table_opts;
+    table_opts.flush_block_policy_factory.reset(
+        new TenKeyFlushBlockPolicyFactory(10));
+    options.table_factory.reset(new BlockBasedTableFactory(table_opts));
+    DestroyAndReopen(options);
+    std::cout << "Random Key" << std::endl;
+    Random rnd(301);
+
+    for (int i = 0; i < 200; ++i) {
+      ASSERT_OK(Put(test::RandomKey(&rnd, 10), rnd.RandomString(10)));
+    }
+
+    ASSERT_OK(options.statistics->Reset());
+    ASSERT_OK(Flush());
+
+    HistogramData compress_time;
+    options.statistics->histogramData(COMPRESSION_TIMES_NANOS, &compress_time);
+    if (comp == kNoCompression) {
+      ASSERT_EQ(compress_time.average, 0.0);
+    } else {
+      ASSERT_GT(compress_time.average, 0.0);
+    }
+
+    std::cout << "max compression time nanos: " << compress_time.max
+              << std::endl;
+    std::cout << "p99 compression time nanos: " << compress_time.percentile99
+              << std::endl;
+    std::cout << "median compression time nanos: " << compress_time.median
+              << std::endl;
+    std::cout << "Avg compression time nanos: " << compress_time.average
+              << std::endl;
+    std::cout << "min compression time nanos: " << compress_time.min
+              << std::endl;
+
+    // auto written_bytes = options.statistics->getTickerCount(WRITTEN_BYTES);
+    // ASSERT_GT(written_bytes, 0);
+    // std::cout << "IO write bytes: " << written_bytes << std::endl;
+
+    // ASSERT_OK(options.statistics->Reset());
+
+    // ASSERT_EQ("v1", Get("k1"));
+
+    // HistogramData decompress_time;
+    // options.statistics->histogramData(DECOMPRESSION_TIMES_NANOS,
+    //                                   &decompress_time);
+
+    // if (comp == kNoCompression) {
+    //   ASSERT_EQ(decompress_time.average, 0.0);
+    // } else {
+    //   ASSERT_GT(decompress_time.average, 0.0);
+    // }
+
+    // std::cout << "Avg decompress time nanos: " << decompress_time.average
+    //           << std::endl;
+
+    // auto read_bytes = options.statistics->getTickerCount(READ_BYTES);
+    // ASSERT_GT(read_bytes, 0);
+    // std::cout << "IO read bytes: " << read_bytes << std::endl;
+  }
+}
+
 TEST_F(DBTest, SingleDeleteFlush) {
   // Test to check whether flushing preserves a single delete hidden
   // behind a put.
@@ -806,9 +927,9 @@ TEST_F(DBTest, SingleDeleteFlush) {
 
     ASSERT_EQ("NOT_FOUND", Get(1, "bar"));
     ASSERT_EQ("NOT_FOUND", Get(1, "foo"));
-    // Skip FIFO and universal compaction beccaus they do not apply to the test
-    // case. Skip MergePut because single delete does not get removed when it
-    // encounters a merge.
+    // Skip FIFO and universal compaction beccaus they do not apply to the
+    // test case. Skip MergePut because single delete does not get removed
+    // when it encounters a merge.
   } while (ChangeOptions(kSkipFIFOCompaction | kSkipUniversalCompaction |
                          kSkipMergePut));
 }
@@ -829,9 +950,9 @@ TEST_F(DBTest, SingleDeletePutFlush) {
     ASSERT_OK(Flush(1));
 
     ASSERT_EQ("[ ]", AllEntriesFor("a", 1));
-    // Skip FIFO and universal compaction because they do not apply to the test
-    // case. Skip MergePut because single delete does not get removed when it
-    // encounters a merge.
+    // Skip FIFO and universal compaction because they do not apply to the
+    // test case. Skip MergePut because single delete does not get removed
+    // when it encounters a merge.
   } while (ChangeOptions(kSkipFIFOCompaction | kSkipUniversalCompaction |
                          kSkipMergePut));
 }
@@ -1072,8 +1193,8 @@ TEST_F(DBTest, FlushSchedule) {
   std::vector<port::Thread> threads;
 
   std::atomic<int> thread_num(0);
-  // each column family will have 5 thread, each thread generating 2 memtables.
-  // each column family should end up with 10 table files
+  // each column family will have 5 thread, each thread generating 2
+  // memtables. each column family should end up with 10 table files
   std::function<void()> fill_memtable_func = [&]() {
     int a = thread_num.fetch_add(1);
     Random rnd(a);
@@ -2152,9 +2273,9 @@ TEST_F(DBTest, UnremovableSingleDelete) {
     ASSERT_EQ("first", Get(1, "foo", snapshot));
     ASSERT_EQ("NOT_FOUND", Get(1, "foo"));
     db_->ReleaseSnapshot(snapshot);
-    // Skip FIFO and universal compaction because they do not apply to the test
-    // case. Skip MergePut because single delete does not get removed when it
-    // encounters a merge.
+    // Skip FIFO and universal compaction because they do not apply to the
+    // test case. Skip MergePut because single delete does not get removed
+    // when it encounters a merge.
   } while (ChangeOptions(kSkipFIFOCompaction | kSkipUniversalCompaction |
                          kSkipMergePut));
 }
@@ -4201,7 +4322,8 @@ TEST_F(DBTest, FIFOCompactionWithTTLTest) {
     ASSERT_OK(dbfull()->TEST_WaitForCompact());
     ASSERT_EQ(NumTableFilesAtLevel(0), 10);
 
-    // Create 1 more file to trigger TTL compaction. The old files are dropped.
+    // Create 1 more file to trigger TTL compaction. The old files are
+    // dropped.
     for (int i = 0; i < 1; i++) {
       for (int j = 0; j < 10; j++) {
         ASSERT_OK(Put(std::to_string(i * 20 + j), rnd.RandomString(980)));
@@ -4217,7 +4339,8 @@ TEST_F(DBTest, FIFOCompactionWithTTLTest) {
   }
 
   // Test that shows the fall back to size-based FIFO compaction if TTL-based
-  // deletion doesn't move the total size to be less than max_table_files_size.
+  // deletion doesn't move the total size to be less than
+  // max_table_files_size.
   {
     options.write_buffer_size = 10 << 10;                              // 10KB
     options.compaction_options_fifo.max_table_files_size = 150 << 10;  // 150KB
@@ -4273,9 +4396,9 @@ TEST_F(DBTest, FIFOCompactionWithTTLTest) {
       ASSERT_OK(Flush());
       ASSERT_OK(dbfull()->TEST_WaitForCompact());
     }
-    // With Intra-L0 compaction, out of 10 files, 6 files will be compacted to 1
-    // (due to level0_file_num_compaction_trigger = 6).
-    // So total files = 1 + remaining 4 = 5.
+    // With Intra-L0 compaction, out of 10 files, 6 files will be compacted to
+    // 1 (due to level0_file_num_compaction_trigger = 6). So total files = 1 +
+    // remaining 4 = 5.
     ASSERT_EQ(NumTableFilesAtLevel(0), 5);
 
     // Sleep for 2 hours -- which is much greater than TTL.
@@ -4533,7 +4656,8 @@ TEST_F(DBTest, SanitizeNumThreads) {
     DestroyAndReopen(options);
 
     for (size_t i = 0; i < kTotalTasks; i++) {
-      // Insert 5 tasks to low priority queue and 5 tasks to high priority queue
+      // Insert 5 tasks to low priority queue and 5 tasks to high priority
+      // queue
       env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask,
                      &sleeping_tasks[i],
                      (i < 4) ? Env::Priority::LOW : Env::Priority::HIGH);
@@ -4723,7 +4847,8 @@ TEST_F(DBTest, DynamicMemtableOptions) {
   }));
 
   // The existing memtable inflated 64KB->128KB when we invoked SetOptions().
-  // Write 192KB, we should have a 128KB L0 file and a memtable with 64KB data.
+  // Write 192KB, we should have a 128KB L0 file and a memtable with 64KB
+  // data.
   gen_l0_kb(192);
   ASSERT_EQ(NumTableFilesAtLevel(0), 1);  // (A)
   ASSERT_LT(SizeAtLevel(0), k128KB + 2 * k5KB);
@@ -4734,9 +4859,10 @@ TEST_F(DBTest, DynamicMemtableOptions) {
       {"write_buffer_size", "65536"},
   }));
   // The existing memtable became eligible for flush when we reduced its
-  // capacity to 64KB. Two keys need to be added to trigger flush: first causes
-  // memtable to be marked full, second schedules the flush. Then we should have
-  // a 128KB L0 file, a 64KB L0 file, and a memtable with just one key.
+  // capacity to 64KB. Two keys need to be added to trigger flush: first
+  // causes memtable to be marked full, second schedules the flush. Then we
+  // should have a 128KB L0 file, a 64KB L0 file, and a memtable with just one
+  // key.
   gen_l0_kb(2);
   ASSERT_EQ(NumTableFilesAtLevel(0), 2);
   ASSERT_LT(SizeAtLevel(0), k128KB + k64KB + 2 * k5KB);
@@ -4873,9 +4999,8 @@ TEST_F(DBTest, GetThreadStatus) {
       env_->SetBackgroundThreads(kBottomPriCounts[test], Env::BOTTOM);
       // Wait to ensure the all threads has been registered
       unsigned int thread_type_counts[ThreadStatus::NUM_THREAD_TYPES];
-      // TODO(ajkr): it'd be better if SetBackgroundThreads returned only after
-      // all threads have been registered.
-      // Try up to 60 seconds.
+      // TODO(ajkr): it'd be better if SetBackgroundThreads returned only
+      // after all threads have been registered. Try up to 60 seconds.
       for (int num_try = 0; num_try < 60000; num_try++) {
         env_->SleepForMicroseconds(1000);
         thread_list.clear();
@@ -5353,7 +5478,8 @@ TEST_F(DBTest, DynamicLevelCompressionPerLevel) {
   ASSERT_EQ(num_block_compressed, 0);
 
   // Insert 400KB and there will be some files end up in L3. According to the
-  // above compression settings for each level, there will be some compression.
+  // above compression settings for each level, there will be some
+  // compression.
   ASSERT_OK(options.statistics->Reset());
   ASSERT_EQ(num_block_compressed, 0);
   for (int i = 20; i < 120; i++) {
@@ -7613,8 +7739,8 @@ TEST_F(DBTest, CreationTimeOfOldestFile) {
     ASSERT_OK(Flush());
   }
 
-  // At this point there should be 2 files, one with file_creation_time = 0 and
-  // the other non-zero. GetCreationTimeOfOldestFile API should return 0.
+  // At this point there should be 2 files, one with file_creation_time = 0
+  // and the other non-zero. GetCreationTimeOfOldestFile API should return 0.
   uint64_t creation_time;
   Status s1 = dbfull()->GetCreationTimeOfOldestFile(&creation_time);
   ASSERT_EQ(0, creation_time);
@@ -7678,8 +7804,8 @@ TEST_F(DBTest, MemoryUsageWithMaxWriteBufferSizeToMaintain) {
 
     // Errors out if memory usage keeps on increasing beyond the limit.
     // Once memory limit exceeds,  memory_limit_exceeded  is set and if
-    // size_all_mem_table doesn't drop out in the next write then it errors out
-    // (not expected behaviour). If memory usage drops then
+    // size_all_mem_table doesn't drop out in the next write then it errors
+    // out (not expected behaviour). If memory usage drops then
     // memory_limit_exceeded is set to false.
     if ((size_all_mem_table > cur_active_mem) &&
         (cur_active_mem >=
@@ -7708,8 +7834,8 @@ TEST_F(DBTest, ShuttingDownNotBlockStalledWrites) {
   ASSERT_EQ(GetSstFileCount(dbname_), 20);
 
   // We need !disable_auto_compactions for writes to stall but also want to
-  // delay compaction so stalled writes unblocked due to kShutdownInProgress. BG
-  // compaction will first wait for the sync point
+  // delay compaction so stalled writes unblocked due to kShutdownInProgress.
+  // BG compaction will first wait for the sync point
   // DBTest::ShuttingDownNotBlockStalledWrites. Then it waits extra 2 sec to
   // allow CancelAllBackgroundWork() to set shutting_down_.
   SyncPoint::GetInstance()->SetCallBack(

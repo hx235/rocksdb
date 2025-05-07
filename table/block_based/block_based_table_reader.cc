@@ -1829,14 +1829,15 @@ void BlockBasedTable::FinishTraceRecord(
 
 template <typename TBlocklike /*, auto*/>
 WithBlocklikeCheck<Status, TBlocklike> BlockBasedTable::RetrieveBlock(
-    FilePrefetchBuffer* prefetch_buffer, const ReadOptions& ro,
+    FilePrefetchBuffer* prefetch_buffer, const ReadOptions& ro_input,
     const BlockHandle& handle, const UncompressionDict& uncompression_dict,
     CachableEntry<TBlocklike>* out_parsed_block, GetContext* get_context,
     BlockCacheLookupContext* lookup_context, bool for_compaction,
     bool use_cache, bool async_read, bool use_block_cache_for_lookup) const {
   assert(out_parsed_block);
   assert(out_parsed_block->IsEmpty());
-
+  ReadOptions ro(ro_input);
+  ro.is_data_block = (TBlocklike::kBlockType == BlockType::kData);
   Status s;
   if (use_cache) {
     s = MaybeReadBlockAndLoadToCache(

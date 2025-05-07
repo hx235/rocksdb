@@ -230,6 +230,8 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {HOT_FILE_READ_COUNT, "rocksdb.hot.file.read.count"},
     {WARM_FILE_READ_COUNT, "rocksdb.warm.file.read.count"},
     {COLD_FILE_READ_COUNT, "rocksdb.cold.file.read.count"},
+    {WRITTEN_BYTES, "rocksdb.written.bytes"},
+    {READ_BYTES, "rocksdb.read.bytes"},
     {LAST_LEVEL_READ_BYTES, "rocksdb.last.level.read.bytes"},
     {LAST_LEVEL_READ_COUNT, "rocksdb.last.level.read.count"},
     {NON_LAST_LEVEL_READ_BYTES, "rocksdb.non.last.level.read.bytes"},

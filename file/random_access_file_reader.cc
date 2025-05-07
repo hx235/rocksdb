@@ -54,8 +54,13 @@ inline Histograms GetFileReadHistograms(Statistics* stats,
   return Histograms::HISTOGRAM_ENUM_MAX;
 }
 inline void RecordIOStats(Statistics* stats, Temperature file_temperature,
-                          bool is_last_level, size_t size) {
+                          bool is_last_level, size_t size,
+                          const IOOptions& opts) {
   IOSTATS_ADD(bytes_read, size);
+  if (opts.is_data_block) {
+    RecordTick(stats, READ_BYTES, size);
+  }
+
   // record for last/non-last level
   if (is_last_level) {
     RecordTick(stats, LAST_LEVEL_READ_BYTES, size);
@@ -264,7 +269,8 @@ IOStatus RandomAccessFileReader::Read(const IOOptions& opts, uint64_t offset,
       }
       *result = Slice(res_scratch, io_s.ok() ? pos : 0);
     }
-    RecordIOStats(stats_, file_temperature_, is_last_level_, result->size());
+    RecordIOStats(stats_, file_temperature_, is_last_level_, result->size(),
+                  opts);
     SetPerfLevel(prev_perf_level);
   }
   if (stats_ != nullptr && file_read_hist_ != nullptr) {
@@ -463,7 +469,7 @@ IOStatus RandomAccessFileReader::MultiRead(const IOOptions& opts,
                         read_reqs[i].offset);
       }
       RecordIOStats(stats_, file_temperature_, is_last_level_,
-                    read_reqs[i].result.size());
+                    read_reqs[i].result.size(), opts);
     }
     SetPerfLevel(prev_perf_level);
   }
@@ -632,7 +638,8 @@ void RandomAccessFileReader::ReadAsyncCallback(FSReadRequest& req,
     NotifyOnIOError(req.status, FileOperationType::kRead, file_name(),
                     req.result.size(), req.offset);
   }
-  RecordIOStats(stats_, file_temperature_, is_last_level_, req.result.size());
+  RecordIOStats(stats_, file_temperature_, is_last_level_, req.result.size(),
+                IOOptions());
   delete read_async_info;
 }
 }  // namespace ROCKSDB_NAMESPACE

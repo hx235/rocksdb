@@ -1251,7 +1251,6 @@ void BlockBasedTableBuilder::CompressAndVerifyBlock(
     StopWatchNano timer(
         r->ioptions.clock,
         ShouldReportDetailedTime(r->ioptions.env, r->ioptions.stats));
-
 #ifndef NDEBUG
     if (type != kNoCompression &&
         g_hack_mixed_compression_in_block_based_table.LoadRelaxed() > 0U) {
@@ -1316,8 +1315,11 @@ void BlockBasedTableBuilder::CompressAndVerifyBlock(
       }
     }
     if (timer.IsStarted()) {
-      RecordTimeToHistogram(r->ioptions.stats, COMPRESSION_TIMES_NANOS,
-                            timer.ElapsedNanos());
+      if (is_data_block && type != kNoCompression) {
+        // Hack to reflect no compression
+        RecordTimeToHistogram(r->ioptions.stats, COMPRESSION_TIMES_NANOS,
+                              timer.ElapsedNanos());
+      }
     }
     if (is_data_block) {
       r->compressible_input_data_bytes.fetch_add(uncompressed_block_data.size(),
@@ -1366,6 +1368,7 @@ void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
   Rep* r = rep_;
   bool is_data_block = block_type == BlockType::kData;
   IOOptions io_options;
+  io_options.is_data_block = is_data_block;
   IOStatus io_s =
       WritableFileWriter::PrepareIOOptions(r->write_options, io_options);
   if (!io_s.ok()) {
@@ -1389,6 +1392,9 @@ void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
     if (!io_s.ok()) {
       r->SetIOStatus(io_s);
       return;
+    }
+    if (is_data_block) {
+      RecordTick(r->ioptions.stats, WRITTEN_BYTES, block_contents.size());
     }
   }
 
@@ -1416,6 +1422,9 @@ void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
     if (!io_s.ok()) {
       r->SetIOStatus(io_s);
       return;
+    }
+    if (is_data_block) {
+      RecordTick(r->ioptions.stats, WRITTEN_BYTES, trailer.size());
     }
   }
 
@@ -1456,6 +1465,9 @@ void BlockBasedTableBuilder::WriteMaybeCompressedBlock(
     } else {
       r->SetIOStatus(io_s);
       return;
+    }
+    if (is_data_block) {
+      RecordTick(r->ioptions.stats, WRITTEN_BYTES, pad_bytes);
     }
   }
 

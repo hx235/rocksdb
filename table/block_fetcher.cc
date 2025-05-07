@@ -246,6 +246,7 @@ inline void BlockFetcher::GetBlockContents() {
 void BlockFetcher::ReadBlock(bool retry) {
   FSReadRequest read_req;
   IOOptions opts;
+  opts.is_data_block = read_options_.is_data_block;
   io_status_ = file_->PrepareIOOptions(read_options_, opts);
   opts.verify_and_reconstruct_read = retry;
   read_req.status.PermitUncheckedError();
@@ -392,7 +393,7 @@ IOStatus BlockFetcher::ReadBlockContents() {
     UncompressionInfo info(context, uncompression_dict_, compression_type_);
     io_status_ = status_to_io_status(UncompressSerializedBlock(
         info, slice_.data(), block_size_, contents_, footer_.format_version(),
-        ioptions_, memory_allocator_));
+        ioptions_, memory_allocator_, read_options_.is_data_block));
 #ifndef NDEBUG
     num_heap_buf_memcpy_++;
 #endif

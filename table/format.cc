@@ -657,7 +657,7 @@ Status UncompressBlockData(const UncompressionInfo& uncompression_info,
                            const char* data, size_t size,
                            BlockContents* out_contents, uint32_t format_version,
                            const ImmutableOptions& ioptions,
-                           MemoryAllocator* allocator) {
+                           MemoryAllocator* allocator, bool is_data_block) {
   Status ret = Status::OK();
 
   assert(uncompression_info.type() != kNoCompression &&
@@ -690,8 +690,10 @@ Status UncompressBlockData(const UncompressionInfo& uncompression_info,
   *out_contents = BlockContents(std::move(ubuf), uncompressed_size);
 
   if (ShouldReportDetailedTime(ioptions.env, ioptions.stats)) {
-    RecordTimeToHistogram(ioptions.stats, DECOMPRESSION_TIMES_NANOS,
-                          timer.ElapsedNanos());
+    if (is_data_block) {
+      RecordTimeToHistogram(ioptions.stats, DECOMPRESSION_TIMES_NANOS,
+                            timer.ElapsedNanos());
+    }
   }
   RecordTick(ioptions.stats, BYTES_DECOMPRESSED_FROM, size);
   RecordTick(ioptions.stats, BYTES_DECOMPRESSED_TO, out_contents->data.size());
@@ -712,11 +714,13 @@ Status UncompressSerializedBlock(const UncompressionInfo& uncompression_info,
                                  BlockContents* out_contents,
                                  uint32_t format_version,
                                  const ImmutableOptions& ioptions,
-                                 MemoryAllocator* allocator) {
+                                 MemoryAllocator* allocator,
+                                 bool is_data_block) {
   assert(data[size] != kNoCompression);
   assert(data[size] == static_cast<char>(uncompression_info.type()));
   return UncompressBlockData(uncompression_info, data, size, out_contents,
-                             format_version, ioptions, allocator);
+                             format_version, ioptions, allocator,
+                             is_data_block);
 }
 
 // Replace the contents of db_host_id with the actual hostname, if db_host_id

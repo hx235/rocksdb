@@ -425,7 +425,8 @@ Status UncompressSerializedBlock(const UncompressionInfo& info,
                                  BlockContents* out_contents,
                                  uint32_t format_version,
                                  const ImmutableOptions& ioptions,
-                                 MemoryAllocator* allocator = nullptr);
+                                 MemoryAllocator* allocator = nullptr,
+                                 bool is_data_block = false);
 
 // This is a variant of UncompressSerializedBlock that does not expect a
 // block trailer beyond `size`. (CompressionType is taken from `info`.)
@@ -433,7 +434,8 @@ Status UncompressBlockData(const UncompressionInfo& info, const char* data,
                            size_t size, BlockContents* out_contents,
                            uint32_t format_version,
                            const ImmutableOptions& ioptions,
-                           MemoryAllocator* allocator = nullptr);
+                           MemoryAllocator* allocator = nullptr,
+                           bool is_data_block = false);
 
 // Replace db_host_id contents with the real hostname if necessary
 Status ReifyDbHostIdProperty(Env* env, std::string* db_host_id);
