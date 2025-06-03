@@ -589,6 +589,9 @@ void CompactionJob::GenSubcompactionBoundaries() {
   // Get the number of planned subcompactions, may update reserve threads
   // and update extra_num_subcompaction_threads_reserved_ for round-robin
   uint64_t num_planned_subcompactions;
+#ifndef NDEBUG
+  std::array<uint64_t, 6> test_info;
+#endif
   if (c->immutable_options().compaction_pri == kRoundRobin &&
       c->immutable_options().compaction_style == kCompactionStyleLevel) {
     // For round-robin compaction prioity, we need to employ more
@@ -612,15 +615,39 @@ void CompactionJob::GenSubcompactionBoundaries() {
       // of planned subcompactions
       num_planned_subcompactions =
           std::min(num_planned_subcompactions, GetSubcompactionsLimit());
+#ifndef NDEBUG
+      test_info = {
+          static_cast<uint64_t>(c->num_input_files(0)),
+          max_subcompactions_limit,
+          static_cast<uint64_t>(c->num_input_files(0)) -
+              max_subcompactions_limit /* planned_acqure */,
+          static_cast<uint64_t>(
+              extra_num_subcompaction_threads_reserved_) /* actual_acquire */,
+          GetSubcompactionsLimit(),
+          num_planned_subcompactions};
+#endif
     } else {
       num_planned_subcompactions = max_subcompactions_limit;
+#ifndef NDEBUG
+      test_info = {static_cast<uint64_t>(c->num_input_files(0)),
+                   max_subcompactions_limit,
+                   0 /* planned_acqure */,
+                   0 /* actual_acquire */,
+                   0,
+                   num_planned_subcompactions};
+#endif
     }
   } else {
     num_planned_subcompactions = GetSubcompactionsLimit();
+#ifndef NDEBUG
+    test_info = {0, 0, 0, 0, 0, num_planned_subcompactions};
+#endif
   }
 
+#ifndef NDEBUG
   TEST_SYNC_POINT_CALLBACK("CompactionJob::GenSubcompactionBoundaries:0",
-                           &num_planned_subcompactions);
+                           &test_info);
+#endif
   if (num_planned_subcompactions == 1) {
     return;
   }
