@@ -37,8 +37,7 @@ class CompressionRejectionProbabilityPredictor {
 class AutoSkipCompressorWrapper : public CompressorWrapper {
  public:
   explicit AutoSkipCompressorWrapper(std::unique_ptr<Compressor> compressor,
-                                     const CompressionOptions& opts,
-                                     const CompressionType type);
+                                     const CompressionOptions& opts);
 
   Status CompressBlock(Slice uncompressed_data, std::string* compressed_output,
                        CompressionType* out_compression_type,
@@ -52,7 +51,6 @@ class AutoSkipCompressorWrapper : public CompressorWrapper {
   static constexpr int kExplorationPercentage = 10;
   static constexpr int kProbabilityCutOff = 50;
   const CompressionOptions& opts_;
-  const CompressionType type_;
   std::shared_ptr<CompressionRejectionProbabilityPredictor> predictor_;
 };
 
