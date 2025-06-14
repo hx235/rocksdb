@@ -69,6 +69,7 @@ class AutoSkipCompressorWrapper : public CompressorWrapper {
   static constexpr int kProbabilityCutOff = 50;
   const CompressionOptions& opts_;
   const CompressionType type_;
+  std::shared_ptr<CompressionRejectionProbabilityPredictor> predictor_;
 };
 
 class AutoSkipCompressorManager : public CompressionManagerWrapper {
