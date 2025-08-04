@@ -182,7 +182,19 @@ void DBImpl::FindObsoleteFiles(JobContext* job_context, bool force,
       versions_->pending_manifest_file_number();
   job_context->log_number = MinLogNumberToKeep();
   job_context->prev_log_number = versions_->prev_log_number();
-
+  // for (auto& )
+  // job_context->temporary_compaction_output_sst = versions_
+  // for (auto cfd : *versions_->GetColumnFamilySet()) {
+  //   for (auto& compaction_progress :
+  //        cfd->current()->storage_info()->compaction_progress_journal_) {
+  //     for (auto& compaction_snapshot :
+  //          compaction_progress.compaction_snapshots) {
+  //       for (auto& output : compaction_snapshot.temp_output_files) {
+  //         job_context->temporary_compaction_output_sst.push_back(output);
+  //       }
+  //     }
+  //   }
+  // }
   if (doing_the_full_scan) {
     versions_->AddLiveFiles(&job_context->sst_live, &job_context->blob_live);
     InfoLogPrefix info_log_prefix(!immutable_db_options_.db_log_dir.empty(),
@@ -429,6 +441,9 @@ void DBImpl::PurgeObsoleteFiles(JobContext& state, bool schedule_only) {
   // Now, convert lists to unordered sets, WITHOUT mutex held; set is slow.
   std::unordered_set<uint64_t> sst_live_set(state.sst_live.begin(),
                                             state.sst_live.end());
+  std::unordered_set<uint64_t> temporary_compaction_output_sst_set(
+      state.temporary_compaction_output_sst.begin(),
+      state.temporary_compaction_output_sst.end());
   std::unordered_set<uint64_t> blob_live_set(state.blob_live.begin(),
                                              state.blob_live.end());
   std::unordered_set<uint64_t> wal_recycle_files_set(
@@ -572,7 +587,9 @@ void DBImpl::PurgeObsoleteFiles(JobContext& state, bool schedule_only) {
         // DontDeletePendingOutputs fail
         // FIXME: but should NOT keep if it came from sst_delete_files?
         keep = (sst_live_set.find(number) != sst_live_set.end()) ||
-               number >= state.min_pending_output;
+               number >= state.min_pending_output ||
+               temporary_compaction_output_sst_set.find(number) !=
+                   temporary_compaction_output_sst_set.end();
         if (!keep) {
           // NOTE: sometimes redundant (if came from sst_delete_files)
           // We don't know which column family is applicable here so we don't

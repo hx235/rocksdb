@@ -301,7 +301,8 @@ class DBImplSecondary : public DBImpl {
   Status CompactWithoutInstallation(const OpenAndCompactOptions& options,
                                     ColumnFamilyHandle* cfh,
                                     const CompactionServiceInput& input,
-                                    CompactionServiceResult* result);
+                                    CompactionServiceResult* result,
+                                    log::Writer* new_desc_log_ptr = nullptr);
 
   // Cache log readers for each log number, used for continue WAL replay
   // after recovery

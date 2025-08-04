@@ -6,11 +6,15 @@
 #include "db/db_test_util.h"
 #include "port/stack_trace.h"
 #include "rocksdb/utilities/options_util.h"
+#include "table/meta_blocks.h"
 #include "table/unique_id_impl.h"
 #include "utilities/merge_operators/string_append/stringappend.h"
 
 namespace ROCKSDB_NAMESPACE {
-
+const std::string output_directory =
+    "/tmp/rocksdbtest-192383/"
+    "compaction_service_test_2075724_8562044961113762429/"
+    "1cc9ecf4-e1e0-4c23-95a1-57c0697291fa/";
 class MyTestCompactionService : public CompactionService {
  public:
   MyTestCompactionService(
@@ -98,9 +102,8 @@ class MyTestCompactionService : public CompactionService {
     OpenAndCompactOptions options;
     options.canceled = &canceled_;
 
-    Status s =
-        DB::OpenAndCompact(options, db_path_, db_path_ + "/" + scheduled_job_id,
-                           compaction_input, result, options_override);
+    Status s = DB::OpenAndCompact(options, db_path_, output_directory,
+                                  compaction_input, result, options_override);
     {
       InstrumentedMutexLock l(&mutex_);
       if (is_override_wait_result_) {
@@ -193,11 +196,16 @@ class CompactionServiceTest : public DBTestBase {
       : DBTestBase("compaction_service_test", true) {}
 
  protected:
-  void ReopenWithCompactionService(Options* options) {
+  void ReopenWithCompactionService(Options* options, bool destroy = true) {
     options->env = env_;
     primary_statistics_ = CreateDBStatistics();
     options->statistics = primary_statistics_;
     compactor_statistics_ = CreateDBStatistics();
+    options->merge_operator = MergeOperators::CreateStringAppendOperator();
+    options->compaction_style = CompactionStyle::kCompactionStyleUniversal;
+    options->num_levels = 3;
+    options->level0_file_num_compaction_trigger = 3;
+    options->target_file_size_base = 1024;
 
     auto my_cs = std::make_shared<MyTestCompactionService>(
         dbname_, *options, compactor_statistics_, remote_listeners,
@@ -205,8 +213,13 @@ class CompactionServiceTest : public DBTestBase {
 
     compaction_service_ = my_cs;
     options->compaction_service = compaction_service_;
-    DestroyAndReopen(*options);
-    CreateAndReopenWithCF({"cf_1", "cf_2", "cf_3"}, *options);
+    if (destroy) {
+      DestroyAndReopen(*options);
+    } else {
+      Reopen(*options);
+    }
+
+    // CreateAndReopenWithCF({"cf_1", "cf_2", "cf_3"}, *options);
     my_cs->SetCanceled(false);
   }
 
@@ -219,47 +232,48 @@ class CompactionServiceTest : public DBTestBase {
     return static_cast_with_check<MyTestCompactionService>(cs);
   }
 
-  void GenerateTestData(bool move_files_manually = false) {
+  void GenerateTestData(bool /* move_files_manually */ = false) {
     // Generate 20 files @ L2 Per CF
-    for (int cf_id = 0; cf_id < static_cast<int>(handles_.size()); cf_id++) {
-      for (int i = 0; i < 20; i++) {
-        for (int j = 0; j < 10; j++) {
-          int key_id = i * 10 + j;
-          ASSERT_OK(Put(cf_id, Key(key_id), "value" + std::to_string(key_id)));
-        }
-        ASSERT_OK(Flush(cf_id));
-      }
-      if (move_files_manually) {
-        MoveFilesToLevel(2, cf_id);
-      }
+    // for (int cf_id = 0; cf_id < static_cast<int>(handles_.size()); cf_id++) {
+    //   for (int i = 0; i < 20; i++) {
+    //     for (int j = 0; j < 10; j++) {
+    //       int key_id = i * 10 + j;
+    //       ASSERT_OK(Put(cf_id, Key(key_id), "value" +
+    //       std::to_string(key_id)));
+    //     }
+    //     ASSERT_OK(Flush(cf_id));
+    //   }
+    //   if (move_files_manually) {
+    //     MoveFilesToLevel(2, cf_id);
+    //   }
 
-      // Generate 10 files @ L1 overlap with all 20 files @ L2
-      for (int i = 0; i < 10; i++) {
-        for (int j = 0; j < 10; j++) {
-          int key_id = i * 20 + j * 2;
-          ASSERT_OK(
-              Put(cf_id, Key(key_id), "value_new" + std::to_string(key_id)));
-        }
-        ASSERT_OK(Flush(cf_id));
-      }
-      if (move_files_manually) {
-        MoveFilesToLevel(1, cf_id);
-        ASSERT_EQ(FilesPerLevel(cf_id), "0,10,20");
-      }
-    }
+    //   // Generate 10 files @ L1 overlap with all 20 files @ L2
+    //   for (int i = 0; i < 10; i++) {
+    //     for (int j = 0; j < 10; j++) {
+    //       int key_id = i * 20 + j * 2;
+    //       ASSERT_OK(
+    //           Put(cf_id, Key(key_id), "value_new" + std::to_string(key_id)));
+    //     }
+    //     ASSERT_OK(Flush(cf_id));
+    //   }
+    //   if (move_files_manually) {
+    //     MoveFilesToLevel(1, cf_id);
+    //     ASSERT_EQ(FilesPerLevel(cf_id), "0,10,20");
+    //   }
+    // }
   }
 
   void VerifyTestData() {
-    for (int cf_id = 0; cf_id < static_cast<int>(handles_.size()); cf_id++) {
-      for (int i = 0; i < 200; i++) {
-        auto result = Get(cf_id, Key(i));
-        if (i % 2) {
-          ASSERT_EQ(result, "value" + std::to_string(i));
-        } else {
-          ASSERT_EQ(result, "value_new" + std::to_string(i));
-        }
-      }
-    }
+    // for (int cf_id = 0; cf_id < static_cast<int>(handles_.size()); cf_id++) {
+    //   for (int i = 0; i < 200; i++) {
+    //     auto result = Get(cf_id, Key(i));
+    //     if (i % 2) {
+    //       ASSERT_EQ(result, "value" + std::to_string(i));
+    //     } else {
+    //       ASSERT_EQ(result, "value_new" + std::to_string(i));
+    //     }
+    //   }
+    // }
   }
 
   std::vector<std::shared_ptr<EventListener>> remote_listeners;
@@ -271,6 +285,202 @@ class CompactionServiceTest : public DBTestBase {
   std::shared_ptr<Statistics> primary_statistics_;
   std::shared_ptr<CompactionService> compaction_service_;
 };
+
+TEST_F(CompactionServiceTest, Design1) {
+  Options options = CurrentOptions();
+  options.paranoid_checks = true;
+  options.paranoid_file_checks = true;
+  options.paranoid_memory_checks = true;
+  ImmutableOptions ioptions(options);
+  DB* secondary_db = nullptr;
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
+      "DBImplSecondary::OpenAndCompact::AfterOpenAsSecondary:0",
+      [&](void* arg) { secondary_db = static_cast<DB*>(arg); });
+
+  ReopenWithCompactionService(&options);
+  std::string internal_key_saved_to_set_later = "";
+  uint64_t last_iter_num = 0;
+  uint64_t last_num_output_records = 0;
+  std::vector<CompactionOutputs::Output> last_past_outputs;
+  int count = 0;
+
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::ShouldStopBefore::manual_decision", [&](void* p) {
+        bool* should_stop = static_cast<bool*>(p);
+        *should_stop = true;
+        count++;
+        if (count == 5) {
+          // Simulate crashing
+          // TODO: Prevent primary from sending job over again
+          CancelAllBackgroundWork(secondary_db, false /*wait*/);
+        }
+      });
+
+  // VersionEdit parsing
+  VersionEdit version_edit;
+  std::string version_edit_string;
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::PostCloseFile0", [&](void* p) {
+        // only do that with no manual compaction
+        VersionEdit temp_version_edit;
+        temp_version_edit = *(static_cast<VersionEdit*>(p));
+        if (!temp_version_edit.compaction_progress_next_key.empty()) {
+          version_edit = temp_version_edit;
+          version_edit_string.clear();
+          bool encode = version_edit.EncodeTo(&version_edit_string);
+          assert(encode);
+          // Decode
+          VersionEdit test_version_edit;
+          test_version_edit.DecodeFrom(version_edit_string);
+          assert(test_version_edit.DebugString() == version_edit.DebugString());
+          // Load table prop (it's an not recognized file so can't be in table
+          // cache)
+
+          for (auto file_metadata :
+               version_edit.compaction_progress_output_files) {
+            // Read table properties for each output file
+            // hack
+            std::string file_name = TableFileName({DbPath(output_directory, 0)},
+                                                  file_metadata.fd.GetNumber(),
+                                                  file_metadata.fd.GetPathId());
+
+            std::unique_ptr<FSRandomAccessFile> file;
+            Status s = ioptions.fs->NewRandomAccessFile(
+                file_name, FileOptions(), &file, nullptr);
+            if (!s.ok()) {
+              continue;
+            }
+
+            std::unique_ptr<RandomAccessFileReader> file_reader(
+                new RandomAccessFileReader(
+                    std::move(file), file_name, ioptions.clock /* clock */,
+                    nullptr /* io_tracer */, ioptions.stats /* stats */,
+                    Histograms::SST_READ_MICROS /* hist_type */,
+                    nullptr /* file_read_hist */, nullptr /* rate_limiter */,
+                    ioptions.listeners));
+
+            std::unique_ptr<TableProperties> props;
+            ReadOptions read_options;
+            s = ReadTableProperties(
+                file_reader.get(), file_metadata.fd.GetFileSize(),
+                Footer::kNullTableMagicNumber /* table's magic number */,
+                ioptions, read_options, &props);
+
+            if (s.ok() && props) {
+              // Successfully read table properties
+              // You can access properties like:
+              // props->num_entries, props->raw_key_size, props->raw_value_size,
+              // etc.
+              std::cout << "File " << file_metadata.fd.GetNumber() << " has "
+                        << props->num_entries << " entries, "
+                        << props->raw_key_size << " bytes of keys, "
+                        << props->raw_value_size << " bytes of values"
+                        << std::endl;
+            }
+          }
+        }
+      });
+
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::PostCloseFile", [&](void* p) {
+        TestStruct* test_struct = static_cast<TestStruct*>(p);
+
+        const Slice internal_key = test_struct->saved_iter_key_to_resume;
+        const Slice internal_value = test_struct->saved_iter_value;
+
+        last_iter_num = test_struct->last_iter_num;
+        last_num_output_records = test_struct->last_num_output_records;
+        last_past_outputs.clear();
+        for (auto& output : test_struct->last_past_outputs) {
+          last_past_outputs.push_back(output);
+        }
+
+        if (!internal_key.empty()) {
+          const Slice user_key = ExtractUserKey(internal_key);
+          internal_key_saved_to_set_later = *(
+              InternalKey(
+                  user_key.ToString(), kMaxSequenceNumber,
+                  kTypeDeletion /* hack, should use SetMaxPossibleForUserKey
+                  */) .const_rep());
+          std::cout << "internal_key_saved_to_set_later: "
+                    << internal_key_saved_to_set_later
+                    << " saved value: " << internal_value.ToString()
+                    << " type: "
+                    << static_cast<int>(ExtractValueType(internal_key))
+                    << std::endl;
+        }
+      });
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+
+  // GenerateTestData();
+  ASSERT_OK(Put("k1", "v1"));
+  ASSERT_OK(Merge("k2", "v1"));
+  ASSERT_OK(Put("k3", "v1"));
+
+  ASSERT_OK(Flush());
+
+  ASSERT_OK(Put("k1", "v2"));
+  ASSERT_OK(Merge("k2", "v2"));
+  ASSERT_OK(Put("k3", "v2"));
+  const Snapshot* snapshot = db_->GetSnapshot();
+
+  ASSERT_OK(Flush());
+
+  ASSERT_OK(SingleDelete("k2"));
+  ASSERT_OK(Put("k3", "v3"));
+
+  ASSERT_OK(Flush());
+
+  Status s = dbfull()->TEST_WaitForCompact();
+
+  // TODO: make sure compaction failure error hit, shutdown in secondary does
+  // not set error handler so wait won't affect status in primary
+  // TEST_WaitForCompact() call
+  ASSERT_OK(s);
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearAllCallBacks();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+
+  db_->ReleaseSnapshot(snapshot);
+  Close();
+
+  // VersionEdit Parsing
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionServiceCompactionJobPassIn", [&](void* p) {
+        auto* str_k = (std::string*)p;
+        *str_k = internal_key_saved_to_set_later;
+      });
+
+  SyncPoint::GetInstance()->SetCallBack("VerifyInputRecordCount", [&](void* p) {
+    uint64_t* prev_num_input_recrods = (uint64_t*)p;
+    *prev_num_input_recrods = last_iter_num;
+  });
+
+  SyncPoint::GetInstance()->SetCallBack(
+      "VerifyOutputRecordCount", [&](void* p) {
+        uint64_t* prev_num_ouput_recrods = (uint64_t*)p;
+        *prev_num_ouput_recrods = last_num_output_records;
+      });
+
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionServiceCompactionJobPostPrepare", [&](void* p) {
+        std::vector<CompactionOutputs::Output>* past_output_files =
+            (std::vector<CompactionOutputs::Output>*)p;
+        for (auto& output : last_past_outputs) {
+          past_output_files->push_back(output);
+        }
+      });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+
+  // compaction input files and output level will be passed in from upper level
+  ReopenWithCompactionService(&options, false /* destroy */);
+
+  ASSERT_OK(dbfull()->TEST_WaitForCompact());
+
+  VerifyTestData();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->ClearAllCallBacks();
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+}
 
 TEST_F(CompactionServiceTest, BasicCompactions) {
   Options options = CurrentOptions();

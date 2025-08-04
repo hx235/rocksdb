@@ -112,7 +112,8 @@ Status SubcompactionState::AddToOutput(
   // update target output
   current_outputs_ =
       use_proximal_output ? &proximal_level_outputs_ : &compaction_outputs_;
-  return current_outputs_->AddToOutput(iter, open_file_func, close_file_func);
+  return current_outputs_->AddToOutput(iter, open_file_func, close_file_func,
+                                       &last_user_key, &last_iter_num);
 }
 
 }  // namespace ROCKSDB_NAMESPACE

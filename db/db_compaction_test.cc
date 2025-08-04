@@ -455,6 +455,207 @@ TEST_P(DBCompactionTestWithParam, CompactionDeletionTrigger) {
   }
 }
 #endif  // !defined(ROCKSDB_VALGRIND_RUN) || defined(ROCKSDB_FULL_VALGRIND_RUN)
+
+TEST_F(DBCompactionTest, Design1) {
+  Options options = CurrentOptions();
+  options.compaction_style = kCompactionStyleUniversal;
+  // options.merge_operator = MergeOperators::CreateStringAppendOperator();
+  DestroyAndReopen(options);
+
+  // Last level file
+  ASSERT_OK(Put("k1", "v0"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("k1", "v1"));
+  ASSERT_OK(Flush());
+  CompactRangeOptions compact_options;
+  ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  std::vector<LiveFileMetaData> files;
+  dbfull()->GetLiveFilesMetaData(&files);
+  ASSERT_EQ(1, files.size());
+  ASSERT_EQ(files[0].level, 6);
+  files.clear();
+
+  // Last to second level file
+  ASSERT_OK(Put("k1", "v1"));
+  // ASSERT_OK(SingleDelete("k1"));
+  // ASSERT_OK(Merge("k1", "v2"));
+  ASSERT_OK(Put("k2", "v1"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  // ASSERT_OK(dbfull()->DeleteRange(WriteOptions(), "k1", "k11"));
+  ASSERT_OK(Delete("k1"));
+  // ASSERT_OK(SingleDelete("k1"));
+  // ASSERT_OK(Merge("k1", "v3"));
+  ASSERT_OK(Put("k2", "v2"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  Iterator* iter = dbfull()->NewIterator(ReadOptions());
+  ASSERT_OK(iter->status());
+  iter->Seek("k1");
+  ASSERT_OK(iter->status());
+  ASSERT_TRUE(iter->key().ToString() == "k2");
+  ASSERT_TRUE(iter->value().ToString() == "v2");
+  delete iter;
+
+  dbfull()->GetLiveFilesMetaData(&files);
+  ASSERT_EQ(3, files.size());
+  ASSERT_EQ(files[0].level, 0);
+  ASSERT_EQ(files[1].level, 0);
+  ASSERT_EQ(files[2].level, 6);
+
+  std::vector<std::string> input_filenames;
+  for (const auto& file : files) {
+    if (file.level == 6) {
+      continue;
+    }
+    input_filenames.push_back(file.name);
+  }
+
+  std::string ikey_to_set_later = "";
+  int count = 0;
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::ShouldStopBefore::manual_decision", [&](void* p) {
+        auto* pair = (std::pair<bool*, const Slice>*)p;
+        *(pair->first) = true;
+        count++;
+        if (count == 1) {
+          ikey_to_set_later = pair->second.ToString();
+        } else if (count == 2) {
+          CancelAllBackgroundWork(dbfull(), false /*wait*/);
+          assert(true);
+        }
+      });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+
+  ASSERT_NOK(dbfull()->CompactFiles(CompactionOptions(), input_filenames, 1));
+  // ASSERT_NOK(dbfull()->CompactRange(CompactRangeOptions(), nullptr,
+  // nullptr));
+
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  ASSERT_EQ("NOT_FOUND", Get("k1"));
+  ASSERT_EQ("v2", Get("k2"));
+
+  Reopen(options);
+  // Should only work on last key is a PUT
+  SyncPoint::GetInstance()->SetCallBack("CompactionJobSeekK", [&](void* p) {
+    auto* str_k = (std::string*)p;
+    *str_k = ikey_to_set_later;
+  });
+  SyncPoint::GetInstance()->SetCallBack("CompactionJobSeekNext", [&](void* p) {
+    auto* should = (bool*)p;
+    *should = true;
+  });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+
+  // Corruption: Compaction number of input keys does not match number of keys
+  // processed and in half
+  //
+  Status s = dbfull()->CompactFiles(CompactionOptions(), input_filenames, 1);
+  std::cout << s.ToString() << std::endl;
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+}
+
+TEST_F(DBCompactionTest, Design0) {
+  Options options = CurrentOptions();
+  options.compaction_style = kCompactionStyleUniversal;
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("k1", "v1"));
+  ASSERT_OK(Put("k2", "v1"));
+  ASSERT_OK(Put("k3", "v1"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "k1", "k2"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  ASSERT_OK(
+      db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(), "k2", "k3"));
+
+  Iterator* iter = dbfull()->NewIterator(ReadOptions());
+  ASSERT_OK(iter->status());
+  iter->Seek("k1");
+  ASSERT_OK(iter->status());
+  ASSERT_TRUE(iter->key().ToString() == "k3");
+  ASSERT_TRUE(iter->value().ToString() == "v1");
+  iter->Next();
+  delete iter;
+
+  ASSERT_OK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+}
+
+TEST_F(DBCompactionTest, Design) {
+  Options options = CurrentOptions();
+  options.compaction_style = kCompactionStyleUniversal;
+
+  DestroyAndReopen(options);
+
+  ASSERT_OK(Put("k1", "v1"));
+  ASSERT_OK(Put("k2", "v1"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  ASSERT_OK(Put("k1", "v2"));
+  ASSERT_OK(Put("k2", "v2"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  // To learn db iter behavior
+  // ASSERT_OK(Put("k2", "v3"));
+  // ASSERT_OK(Flush());
+  // ASSERT_OK(dbfull()->TEST_WaitForFlushMemTable());
+
+  Iterator* iter = dbfull()->NewIterator(ReadOptions());
+  ASSERT_OK(iter->status());
+  iter->Seek("k1");
+  ASSERT_OK(iter->status());
+  ASSERT_TRUE(iter->key().ToString() == "k1");
+  ASSERT_TRUE(iter->value().ToString() == "v2");
+  iter->Next();
+  ASSERT_OK(iter->status());
+  ASSERT_TRUE(iter->key().ToString() == "k2");
+  ASSERT_TRUE(iter->value().ToString() == "v2");
+  delete iter;
+
+  std::string ikey_to_set_later = "";
+  int count = 0;
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::ShouldStopBefore::manual_decision", [&](void* p) {
+        auto* pair = (std::pair<bool*, const Slice>*)p;
+        *(pair->first) = true;
+        count++;
+        if (count == 2) {
+          // ikey_to_set_later = pair->second.ToString();
+          ikey_to_set_later =
+              *(InternalKey("k2", kMaxSequenceNumber, kTypeValue).const_rep());
+          CancelAllBackgroundWork(dbfull(), false /*wait*/);
+          assert(true);
+        }
+      });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  ASSERT_NOK(dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+  ASSERT_EQ("v2", Get("k1"));
+  ASSERT_EQ("v2", Get("k2"));
+
+  Reopen(options);
+  SyncPoint::GetInstance()->SetCallBack("CompactionJobSeekK", [&](void* p) {
+    auto* str_k = (std::string*)p;
+    *str_k = ikey_to_set_later;
+  });
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->EnableProcessing();
+  // Corruption: Compaction number of input keys does not match number of keys
+  // processed and in half
+  Status s = dbfull()->CompactRange(CompactRangeOptions(), nullptr, nullptr);
+  ASSERT_NOK(s);
+  std::cout << s.ToString() << std::endl;
+  ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
+}
+
 TEST_F(DBCompactionTest, UniversalReduceFileLockingRepickNothing) {
   const int kFileNumCompactionTrigger = 3;
 

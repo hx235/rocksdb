@@ -143,6 +143,8 @@ class VersionStorageInfo {
   void operator=(const VersionStorageInfo&) = delete;
   ~VersionStorageInfo();
 
+  // std::vector<CompactionProgress> compaction_progress_journal_;
+
   void Reserve(int level, size_t size) { files_[level].reserve(size); }
 
   void AddFile(int level, FileMetaData* f);

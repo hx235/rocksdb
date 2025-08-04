@@ -35,6 +35,11 @@ class CacheReservationManager;
 // Versions that contain full copies of the intermediate state.
 class VersionBuilder {
  public:
+  //   bool has_compaction_progress_ = false;
+  //   CompactionProgress compaction_progress_;
+  //   bool has_compaction_snapshot_ = false;
+  //   CompactionSnapshot compaction_snapshot_;
+
   VersionBuilder(const FileOptions& file_options,
                  const ImmutableCFOptions* ioptions, TableCache* table_cache,
                  VersionStorageInfo* base_vstorage, VersionSet* version_set,

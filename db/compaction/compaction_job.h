@@ -142,6 +142,10 @@ class SubcompactionState;
 
 class CompactionJob {
  public:
+  bool is_remote_compaction = false;
+  log::Writer* new_desc_log_ptr = nullptr;
+  std::string resume_seek_key = "";
+  void AddPastOutputFiles(std::vector<CompactionOutputs::Output> outputs);
   CompactionJob(int job_id, Compaction* compaction,
                 const ImmutableDBOptions& db_options,
                 const MutableDBOptions& mutable_db_options,
@@ -502,7 +506,7 @@ struct CompactionServiceResult {
 // CompactionServiceCompactionJob is an read-only compaction job, it takes
 // input information from `compaction_service_input` and put result information
 // in `compaction_service_result`, the SST files are generated to `output_path`.
-class CompactionServiceCompactionJob : private CompactionJob {
+class CompactionServiceCompactionJob : public CompactionJob {
  public:
   CompactionServiceCompactionJob(
       int job_id, Compaction* compaction, const ImmutableDBOptions& db_options,

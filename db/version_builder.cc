@@ -421,6 +421,8 @@ class VersionBuilder::Rep {
     delete[] levels_;
   }
 
+  // VersionStorageInfo* GetBaseVstorage() { return base_vstorage_; }
+
   void RefFile(FileMetaData* f) {
     assert(f);
     assert(f->refs > 0);
@@ -1768,10 +1770,46 @@ bool VersionBuilder::CheckConsistencyForNumLevels() {
 }
 
 Status VersionBuilder::Apply(const VersionEdit* edit) {
+  // progress + snapshot -> save to
+  // just snapshot -> save to
+  // progress no -> save to
+
+  // progress + snapshot
+  // just snapshot
+  // progress no
+  // save to
+  // if (edit->has_compaction_progress_) {
+  //   has_compaction_progress_ = edit->has_compaction_progress_;
+  //   compaction_progress_ = edit->compaction_progress_;
+  // }
+  // if (edit->has_compaction_snapshot_) {
+  //   has_compaction_snapshot_ = edit->has_compaction_snapshot_;
+  //   compaction_snapshot_ = edit->compaction_snapshot_;
+  // }
+  // if (has_compaction_progress_ && !compaction_progress_.finished &&
+  //     has_compaction_progress_) {
+  //   compaction_progress_.compaction_snapshots.push_back(compaction_snapshot_);
+  // }
   return rep_->Apply(edit);
 }
 
 Status VersionBuilder::SaveTo(VersionStorageInfo* vstorage) const {
+  // vstorage->compaction_progress_journal_ =
+  //     rep_->GetBaseVstorage()->compaction_progress_journal_;
+
+  // if (vstorage->compaction_progress_journal_.empty()) {
+  //   if (has_compaction_progress_) {
+  //     vstorage->compaction_progress_journal_.push_back(compaction_progress_);
+  //   }
+  // } else if (vstorage->compaction_progress_journal_.size() == 1) {
+  //   if (has_compaction_snapshot_) {
+  //     vstorage->compaction_progress_journal_[0].compaction_snapshots.push_back(
+  //         compaction_snapshot_);
+  //   }
+  // }
+  // if (has_compaction_progress_ && compaction_progress_.finished) {
+  //   vstorage->compaction_progress_journal_.clear();
+  // }
   return rep_->SaveTo(vstorage);
 }
 

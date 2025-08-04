@@ -186,6 +186,9 @@ struct JobContext {
   // the list of all live sst files that cannot be deleted
   std::vector<uint64_t> sst_live;
 
+  // Hack
+  std::vector<uint64_t> temporary_compaction_output_sst;
+
   // the list of sst files that we need to delete
   std::vector<ObsoleteFileInfo> sst_delete_files;
 

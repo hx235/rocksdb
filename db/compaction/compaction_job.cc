@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -56,7 +57,6 @@
 #include "table/unique_id_impl.h"
 #include "test_util/sync_point.h"
 #include "util/stop_watch.h"
-
 namespace ROCKSDB_NAMESPACE {
 
 const char* GetCompactionReasonString(CompactionReason compaction_reason) {
@@ -668,6 +668,15 @@ void CompactionJob::GenSubcompactionBoundaries() {
                extra_num_subcompaction_threads_reserved_));
 }
 
+void CompactionJob::AddPastOutputFiles(
+    std::vector<CompactionOutputs::Output> outputs) {
+  assert(compact_->sub_compact_states.size() == 1);
+  for (CompactionOutputs::Output output : outputs) {
+    compact_->sub_compact_states[0].compaction_outputs_.outputs_.push_back(
+        output);
+  }
+}
+
 Status CompactionJob::Run() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_RUN);
@@ -895,7 +904,11 @@ Status CompactionJob::Run() {
       }
     }
 
-    uint64_t expected = internal_stats_.output_level_stats.num_output_records;
+    uint64_t prev_num_output_recrods = 0;
+    TEST_SYNC_POINT_CALLBACK("VerifyOutputRecordCount",
+                             &prev_num_output_recrods);
+    uint64_t expected = internal_stats_.output_level_stats.num_output_records +
+                        prev_num_output_recrods;
     if (internal_stats_.has_proximal_level_output) {
       expected += internal_stats_.proximal_level_stats.num_output_records;
     }
@@ -1167,6 +1180,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   const CompactionFilter* compaction_filter = cfd->ioptions().compaction_filter;
   std::unique_ptr<CompactionFilter> compaction_filter_from_factory = nullptr;
   if (compaction_filter == nullptr) {
+    // Hack: pass in the needed context in compactin filter from factory and to
+    // determine support resume or not
     compaction_filter_from_factory =
         sub_compact->compaction->CreateCompactionFilter();
     compaction_filter = compaction_filter_from_factory.get();
@@ -1175,6 +1190,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     sub_compact->status = Status::NotSupported(
         "CompactionFilter::IgnoreSnapshots() = false is not supported "
         "anymore.");
+    return;
+  }
+  bool resuming_compaction = false;
+  if (resuming_compaction && !compaction_filter->SupportResume()) {
+    sub_compact->status = Status::NotSupported(
+        "Resuming compaction is not supported by compaction filter. ");
     return;
   }
 
@@ -1296,7 +1317,30 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     input = trim_history_iter.get();
   }
 
-  input->SeekToFirst();
+  // std::string debug_seek_k = "";
+  // TEST_SYNC_POINT_CALLBACK("CompactionJobSeekK", &debug_seek_k);
+  // if (debug_seek_k != "") {
+  //   std::cout << "debug_seek_k: " << debug_seek_k << std::endl;
+  //   // different from db iterator in the seek behavior
+  //   input->Seek(Slice(debug_seek_k));
+  //   std::cout << input->key().ToString() << std::endl;
+  //   std::cout << input->value().ToString() << std::endl;
+  //   bool should_seek_next = false;
+  //   TEST_SYNC_POINT_CALLBACK("CompactionJobSeekNext", &should_seek_next);
+  //   if (should_seek_next) {
+  //     input->Next();
+  //   }
+  // } else if
+  if (resume_seek_key != "") {
+    std::cout << "resume_seek_key: " << resume_seek_key << std::endl;
+    input->Seek(Slice(resume_seek_key));
+    std::cout << "Input iterator Seek: " << input->key().ToString()
+              << " Value: " << input->value().ToString()
+              << " Type: " << static_cast<int>(ExtractValueType(input->key()))
+              << std::endl;
+  } else {
+    input->SeekToFirst();
+  }
 
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_PROCESS_KV);
@@ -1360,6 +1404,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       job_context_ ? job_context_->GetJobSnapshotSequence()
                    : kMaxSequenceNumber;
 
+  // CompactionIterator does not have Seek()
   auto c_iter = std::make_unique<CompactionIterator>(
       input, cfd->user_comparator(), &merge, versions_->LastSequence(),
       &(job_context_->snapshot_seqs), earliest_snapshot_,
@@ -1373,7 +1418,16 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
           ->DoesInputReferenceBlobFiles() /* must_count_input_entries */,
       sub_compact->compaction, compaction_filter, shutting_down_,
       db_options_.info_log, full_history_ts_low, preserve_seqno_after_);
+
   c_iter->SeekToFirst();
+
+  if (resume_seek_key != "") {
+    std::cout << "Compaction/Merging iterator SeekToFirst: "
+              << c_iter->key().ToString()
+              << " Value: " << c_iter->value().ToString()
+              << " Type: " << static_cast<int>(ExtractValueType(c_iter->key()))
+              << std::endl;
+  }
 
   const auto& c_iter_stats = c_iter->iter_stats();
 
@@ -1814,6 +1868,71 @@ Status CompactionJob::FinishCompactionOutputFile(
   }
 
   outputs.ResetBuilder();
+
+  // Should follow the same process as compaction install result but with
+  // special edit
+  //
+  // if (s.ok()) {
+  //   db_mutex_->Lock();
+  //   VersionEdit special_edit;
+
+  //   auto vstorage = sub_compact->compaction->column_family_data()
+  //                       ->current()
+  //                       ->storage_info();
+
+  //   bool has_this_compaction_progress = false;
+  //   for (const auto& compaction_progress :
+  //        vstorage->compaction_progress_journal_) {
+  //     if (compaction_progress.id == job_id_) {
+  //       has_this_compaction_progress = true;
+  //       break;
+  //     }
+  //   }
+
+  //   if (!has_this_compaction_progress) {
+  //     CompactionProgress copmaction_progress;
+  //     copmaction_progress.id = job_id_;
+  //     for (size_t level = 0;
+  //          level < sub_compact->compaction->num_input_levels(); level++) {
+  //       const LevelFilesBrief* flevel =
+  //           sub_compact->compaction->input_levels(level);
+  //       for (size_t i = 0; i < flevel->num_files; i++) {
+  //         const FileMetaData& fmd = *flevel->files[i].file_metadata;
+  //         copmaction_progress.input_files.push_back(
+  //             fmd.fd.packed_number_and_path_id);
+  //       }
+  //     }
+  //     special_edit.has_compaction_progress_ = true;
+  //     special_edit.compaction_progress_ = std::move(copmaction_progress);
+  //   }
+
+  //   // New compaction snapshot
+  //   CompactionSnapshot compaction_snapshot;
+  //   compaction_snapshot.compaction_progress_id = job_id_;
+  //   compaction_snapshot.next_key = next_table_min_key.ToString();
+  //   compaction_snapshot.temp_output_files.push_back(output_number);
+
+  //   special_edit.has_compaction_snapshot_ = true;
+  //   special_edit.compaction_snapshot_ = compaction_snapshot;
+  //   if (is_remote_compaction) {
+  //     // skip logging
+  //     assert(s.ok());
+  //     std::string encoded;
+  //     special_edit.EncodeTo(&encoded, 0 /* ts_sz */);
+  //     io_s = new_desc_log_ptr->AddRecord(WriteOptions(), encoded);
+  //     assert(io_s.ok());
+  //   } else {
+  //     s =
+  //     versions_->LogAndApply(sub_compact->compaction->column_family_data(),
+  //                                ReadOptions(Env::IOActivity::kCompaction),
+  //                                WriteOptions(Env::IOActivity::kCompaction),
+  //                                &special_edit, db_mutex_, db_directory_);
+  //   }
+
+  //   assert(s.ok());
+  //   db_mutex_->Unlock();
+  //   TEST_SYNC_POINT("CompactionJob::PostPersistProgress");
+  // }
   return s;
 }
 
@@ -1906,6 +2025,11 @@ Status CompactionJob::InstallCompactionResults(bool* compaction_released) {
     *compaction_released = true;
   };
 
+  // edit->has_compaction_progress_ = true;
+  // CompactionProgress copmaction_progress;
+  // copmaction_progress.id = job_id_;
+  // copmaction_progress.finished = true;
+  // edit->compaction_progress_ = copmaction_progress;
   return versions_->LogAndApply(compaction->column_family_data(), read_options,
                                 write_options, edit, db_mutex_, db_directory_,
                                 /*new_descriptor_log=*/false,
@@ -2368,7 +2492,9 @@ Status CompactionJob::VerifyInputRecordCount(
     // TODO: verify the number of range deletion entries.
     uint64_t expected = internal_stats_.output_level_stats.num_input_records -
                         num_input_range_del;
-    uint64_t actual = job_stats_->num_input_records;
+    uint64_t prev_num_input_recrods = 0;
+    TEST_SYNC_POINT_CALLBACK("VerifyInputRecordCount", &prev_num_input_recrods);
+    uint64_t actual = job_stats_->num_input_records + prev_num_input_recrods;
     if (expected != actual) {
       char scratch[2345];
       compact_->compaction->Summary(scratch, sizeof(scratch));

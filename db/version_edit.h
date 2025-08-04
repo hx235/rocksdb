@@ -72,6 +72,18 @@ enum Tag : uint32_t {
   kWalAddition2,
   kWalDeletion2,
   kPersistUserDefinedTimestamps,
+  // hack
+  // kCompactionProgress,
+  // kCompactionProgressID,
+  // kCompactionProgressInputFiles,
+  // kCompactionProgressFinished,
+
+  // kCompactionSnapshot,
+  // kCompactionSnapshotCompactionProgressID,
+  kCompactionProgressNextKey,
+  kCompactionProgressOutputFiles,
+  kCompactionProgressNumProcessedInputKeys,
+  kCompactionProgressNumProcessedOutputKeys,
 };
 
 enum NewFileCustomTag : uint32_t {
@@ -446,6 +458,19 @@ struct LevelFilesBrief {
 // to the MANIFEST file.
 class VersionEdit {
  public:
+  // bool has_compaction_progress_ = false;
+
+  // CompactionProgress compaction_progress_;
+
+  // bool has_compaction_snapshot_ = false;
+
+  // CompactionSnapshot compaction_snapshot_;
+
+  std::string compaction_progress_next_key = "";
+  uint64_t compaction_progress_num_processed_input_keys = 0;
+  uint64_t compaction_progress_num_processed_output_keys = 0;
+  std::vector<FileMetaData> compaction_progress_output_files = {};
+
   void Clear();
 
   void SetDBId(const std::string& db_id) {
@@ -759,7 +784,8 @@ class VersionEdit {
  private:
   bool GetLevel(Slice* input, int* level, const char** msg);
 
-  const char* DecodeNewFile4From(Slice* input);
+  const char* DecodeNewFile4From(Slice* input,
+                                 bool add_to_compaction_progress = false);
 
   // Encode file boundaries `FileMetaData.smallest` and `FileMetaData.largest`.
   // User-defined timestamps in the user key will be stripped if they shouldn't

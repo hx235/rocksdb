@@ -6720,6 +6720,16 @@ Status VersionSet::WriteCurrentStateToManifest(
           cfd->internal_comparator().user_comparator()->Name());
       edit.SetPersistUserDefinedTimestamps(
           cfd->ioptions().persist_user_defined_timestamps);
+
+      // // hack
+      // auto& journal =
+      //     cfd->current()->storage_info()->compaction_progress_journal_;
+      // edit.has_compaction_progress_ = (journal.size() > 0);
+      // if (edit.has_compaction_progress_) {
+      //   edit.compaction_progress_ = journal[0];
+      //   edit.has_compaction_snapshot_ = true;
+      //   edit.compaction_progress_.compaction_snapshots[0];
+      // }
       std::string record;
       if (!edit.EncodeTo(&record)) {
         return Status::Corruption("Unable to Encode VersionEdit:" +

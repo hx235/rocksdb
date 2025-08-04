@@ -1183,6 +1183,19 @@ struct ParsedInternalKeyComparator {
   const InternalKeyComparator* cmp;
 };
 
+struct CompactionSnapshot {
+  uint32_t compaction_progress_id;
+  std::string next_key;
+  std::vector<uint64_t> temp_output_files;
+};
+
+struct CompactionProgress {
+  uint32_t id;
+  std::vector<uint64_t> input_files;
+  std::vector<CompactionSnapshot> compaction_snapshots;
+  bool finished = false;
+};
+
 class PredecessorWALInfo {
  public:
   PredecessorWALInfo()

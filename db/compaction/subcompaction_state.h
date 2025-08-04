@@ -49,6 +49,8 @@ namespace ROCKSDB_NAMESPACE {
 
 class SubcompactionState {
  public:
+  std::string last_user_key = "";
+  uint64_t last_iter_num = 0;
   const Compaction* compaction;
 
   // The boundaries of the key-range this compaction is interested in. No two
@@ -72,6 +74,8 @@ class SubcompactionState {
   // sub-compaction job id, which is used to identify different sub-compaction
   // within the same compaction job.
   const uint32_t sub_job_id;
+
+  CompactionOutputs compaction_outputs_;
 
   Slice SmallestUserKey() const;
 
@@ -229,7 +233,6 @@ class SubcompactionState {
 
  private:
   // State kept for output being generated
-  CompactionOutputs compaction_outputs_;
   CompactionOutputs proximal_level_outputs_;
   CompactionOutputs* current_outputs_ = &compaction_outputs_;
   std::unique_ptr<CompactionRangeDelAggregator> range_del_agg_;

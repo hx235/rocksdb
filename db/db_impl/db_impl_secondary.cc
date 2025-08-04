@@ -6,9 +6,11 @@
 #include "db/db_impl/db_impl_secondary.h"
 
 #include <cinttypes>
+#include <iostream>
 
 #include "db/arena_wrapped_db_iter.h"
 #include "db/merge_context.h"
+#include "db/version_edit_handler.h"
 #include "logging/auto_roll_logger.h"
 #include "logging/logging.h"
 #include "monitoring/perf_context_imp.h"
@@ -825,7 +827,8 @@ Status DB::OpenAsSecondary(
 
 Status DBImplSecondary::CompactWithoutInstallation(
     const OpenAndCompactOptions& options, ColumnFamilyHandle* cfh,
-    const CompactionServiceInput& input, CompactionServiceResult* result) {
+    const CompactionServiceInput& input, CompactionServiceResult* result,
+    log::Writer* new_desc_log_ptr) {
   if (options.canceled && options.canceled->load(std::memory_order_acquire)) {
     return Status::Incomplete(Status::SubCode::kManualCompactionPaused);
   }
@@ -904,8 +907,18 @@ Status DBImplSecondary::CompactWithoutInstallation(
       &job_context, table_cache_, &event_logger_, dbname_, io_tracer_,
       options.canceled ? *options.canceled : kManualCompactionCanceledFalse_,
       input.db_id, db_session_id_, secondary_path_, input, result);
-
+  compaction_job.is_remote_compaction = true;
+  compaction_job.new_desc_log_ptr = new_desc_log_ptr;
+  std::string debug_seek_k = "";
+  TEST_SYNC_POINT_CALLBACK("CompactionServiceCompactionJobPassIn",
+                           &debug_seek_k);
+  compaction_job.resume_seek_key = debug_seek_k;
   compaction_job.Prepare();
+
+  std::vector<CompactionOutputs::Output> past_output_files;
+  TEST_SYNC_POINT_CALLBACK("CompactionServiceCompactionJobPostPrepare",
+                           &past_output_files);
+  compaction_job.AddPastOutputFiles(past_output_files);
 
   mutex_.Unlock();
   s = compaction_job.Run();
@@ -913,6 +926,8 @@ Status DBImplSecondary::CompactWithoutInstallation(
 
   // clean up
   compaction_job.io_status().PermitUncheckedError();
+  // As part of clean up comapction, clean temporay recording
+  // If compaction job failed, clean tempory recording
   compaction_job.CleanupCompaction();
   c->ReleaseCompactionFiles(s);
   c.reset();
@@ -934,6 +949,7 @@ Status DB::OpenAndCompact(
   }
 
   // 1. Deserialize Compaction Input
+  // 1. If resume, same compaction input from metastore
   CompactionServiceInput compaction_input;
   Status s = CompactionServiceInput::Read(input, &compaction_input);
   if (!s.ok()) {
@@ -961,6 +977,7 @@ Status DB::OpenAndCompact(
   }
 
   // 3. Options to Override
+  // 3. If resume, same compaction db option from metastore
   // Override serializable configurations from override_options.options_map
   DBOptions db_options;
   s = GetDBOptionsFromMap(config_options, base_db_options,
@@ -983,6 +1000,7 @@ Status DB::OpenAndCompact(
   db_options.info_log = override_options.info_log;
 
   // 4. Filter CFs that are needed for OpenAndCompact()
+  //
   // We do not need to open all column families for the remote compaction.
   // Only open default CF + target CF. If target CF == default CF, we will open
   // just the default CF (Due to current limitation, DB cannot open without the
@@ -1043,12 +1061,102 @@ Status DB::OpenAndCompact(
   }
   assert(cfh);
 
+  // HACK
+  // Check if compaction recording file exists in output directory
+  // if not clear and output
+  s = db->GetEnv()->FileExists(output_directory);
+  assert(s.ok());
+  std::vector<std::string> subchildren;
+
+  s = db->GetEnv()->GetChildren(output_directory, &subchildren);
+  assert(s.ok());
+  bool should_resume = subchildren.size() > 1;
+
+  std::string descriptor_fname =
+      DescriptorFileName(output_directory, 123) + "temp";
+  std::unique_ptr<log::Writer> new_desc_log_ptr;
+  std::unique_ptr<FSWritableFile> descriptor_file;
+  if (should_resume) {
+    for (const auto& subchild : subchildren) {
+      std::string subchild_path = output_directory + "/" + subchild;
+      std::cout << "Looking at file " << subchild_path << std::endl;
+    }
+    // parsing
+    {
+      std::unique_ptr<FSSequentialFile> manifest_file;
+      s = db->GetFileSystem()->NewSequentialFile(
+          descriptor_fname,
+          db->GetFileSystem()->OptimizeForManifestRead(FileOptions()),
+          &manifest_file, nullptr);
+      assert(s.ok());
+      std::unique_ptr<SequentialFileReader> manifest_file_reader;
+      manifest_file_reader.reset(new SequentialFileReader(
+          std::move(manifest_file), descriptor_fname, 0, nullptr, {},
+          /*rate_limiter=*/nullptr, false));
+
+      log::Reader reader(nullptr, std::move(manifest_file_reader), nullptr,
+                         true /* checksum */, 0 /* log_number */);
+
+      ImmutableDBOptions immutable_db_options;
+      std::shared_ptr<Cache> table_cache(NewLRUCache(50000, 16));
+      WriteBufferManager write_buffer_manager(db_options.db_write_buffer_size);
+      WriteController write_controller(10000000u);
+      VersionSet versions("fkae", &immutable_db_options, EnvOptions(),
+                          table_cache.get(), &write_buffer_manager,
+                          &write_controller,
+                          /*block_cache_tracer=*/nullptr,
+                          /*io_tracer=*/nullptr, /*db_id=*/"",
+                          /*db_session_id=*/"",
+                          /*daily_offpeak_time_utc=*/"",
+                          /*error_handler=*/nullptr, /*read_only=*/false);
+      VersionEditHandler handler(false, column_families, &versions,
+                                 /*track_found_and_missing_files=*/false, false,
+                                 nullptr, ReadOptions(),
+                                 /*allow_incomplete_valid_version=*/false,
+                                 EpochNumberRequirement::kMightMissing);
+      Status log_read_status;
+      std::cout << "Parsing existing manifest " << descriptor_fname
+                << std::endl;
+      handler.Iterate(reader, &log_read_status);
+      assert(log_read_status.ok());
+    }
+
+    std::unique_ptr<WritableFile> log_file;
+    IOStatus io_s = db->GetFileSystem()->ReopenWritableFile(
+        descriptor_fname, EnvOptions(), &descriptor_file, nullptr);
+    assert(io_s.ok());
+    std::unique_ptr<WritableFileWriter> file_writer(new WritableFileWriter(
+        std::move(descriptor_file), descriptor_fname, FileOptions()));
+    new_desc_log_ptr.reset(new log::Writer(std::move(file_writer), 0, false));
+  } else {
+    IOStatus io_s = db->GetFileSystem()->NewWritableFile(
+        descriptor_fname, FileOptions(), &descriptor_file, nullptr);
+    assert(io_s.ok());
+    std::unique_ptr<WritableFileWriter> file_writer(new WritableFileWriter(
+        std::move(descriptor_file), descriptor_fname, FileOptions()));
+    new_desc_log_ptr.reset(new log::Writer(std::move(file_writer), 0, false));
+
+    std::string record;
+    VersionEdit edit;
+    // edit.has_compaction_progress_ = true;
+    edit.SetLogNumber(kMaxSequenceNumber);
+    edit.SetLastSequence(kMaxSequenceNumber - 1);
+    edit.SetNextFile(kMaxSequenceNumber);
+    std::string encoded;
+    edit.EncodeTo(&encoded, 0 /* ts_sz */);
+    io_s = new_desc_log_ptr->AddRecord(WriteOptions(), encoded);
+    assert(io_s.ok());
+  }
+  // HACK
+
   // 7. Run the compaction without installation.
   // Output will be stored in the directory specified by output_directory
+  // indicate: should resume
   CompactionServiceResult compaction_result;
   DBImplSecondary* db_secondary = static_cast_with_check<DBImplSecondary>(db);
   s = db_secondary->CompactWithoutInstallation(options, cfh, compaction_input,
-                                               &compaction_result);
+                                               &compaction_result,
+                                               new_desc_log_ptr.get());
 
   // 8. Serialize the result
   Status serialization_status = compaction_result.Write(output);

@@ -10,6 +10,8 @@
 
 #include "db/compaction/compaction_outputs.h"
 
+#include <iostream>
+
 #include "db/builder.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -233,10 +235,12 @@ bool CompactionOutputs::ShouldStopBefore(const CompactionIterator& c_iter) {
   assert(c_iter.Valid());
   const Slice& internal_key = c_iter.key();
 #ifndef NDEBUG
+
   bool should_stop = false;
-  std::pair<bool*, const Slice> p{&should_stop, internal_key};
+
   TEST_SYNC_POINT_CALLBACK(
-      "CompactionOutputs::ShouldStopBefore::manual_decision", (void*)&p);
+      "CompactionOutputs::ShouldStopBefore::manual_decision",
+      (void*)&should_stop);
   if (should_stop) {
     return true;
   }
@@ -358,7 +362,8 @@ bool CompactionOutputs::ShouldStopBefore(const CompactionIterator& c_iter) {
 Status CompactionOutputs::AddToOutput(
     const CompactionIterator& c_iter,
     const CompactionFileOpenFunc& open_file_func,
-    const CompactionFileCloseFunc& close_file_func) {
+    const CompactionFileCloseFunc& close_file_func, std::string* last_user_key,
+    uint64_t* last_iter_num) {
   Status s;
   bool is_range_del = c_iter.IsDeleteRangeSentinelKey();
   if (is_range_del && compaction_->bottommost_level()) {
@@ -368,11 +373,51 @@ Status CompactionOutputs::AddToOutput(
     return s;
   }
   const Slice& key = c_iter.key();
+  bool same_as_prev_key = c_iter.user_key().compare(*last_user_key) == 0;
+  if (!is_range_del) {
+    *last_user_key = c_iter.user_key().ToString();
+  }
+  bool valid_to_pass_in = !same_as_prev_key && !is_range_del;
+  const uint64_t last_num_output_records = stats_.num_output_records;
   if (ShouldStopBefore(c_iter) && HasBuilder()) {
     s = close_file_func(*this, c_iter.InputStatus(), key);
     if (!s.ok()) {
       return s;
     }
+    TestStruct test_struct;
+    test_struct.saved_iter_key_to_resume =
+        (valid_to_pass_in ? c_iter.key() : "");
+    test_struct.saved_iter_value = (valid_to_pass_in ? c_iter.value() : "");
+    test_struct.last_iter_num = *last_iter_num;
+    test_struct.last_num_output_records = last_num_output_records;
+    // Reuse/Not needed: cfd->internal_comparator(), paranoid check,
+    // precalculated_hash
+    // Hard-coded: finished = true
+    // Recording: Meta, table properties
+    for (auto& output : outputs_) {
+      test_struct.last_past_outputs.push_back(output);
+    }
+
+    // VersionEdit
+    // Write to record
+    VersionEdit compaction_progress_version_edit;
+    compaction_progress_version_edit.compaction_progress_next_key =
+        (valid_to_pass_in ? c_iter.key().ToString() : "");
+    compaction_progress_version_edit
+        .compaction_progress_num_processed_input_keys = *last_iter_num;
+    compaction_progress_version_edit
+        .compaction_progress_num_processed_output_keys =
+        last_num_output_records;
+    for (auto& output : outputs_) {
+      compaction_progress_version_edit.compaction_progress_output_files
+          .push_back(output.meta);
+    }
+
+    TEST_SYNC_POINT_CALLBACK("CompactionOutputs::PostCloseFile0",
+                             (void*)&compaction_progress_version_edit);
+    TEST_SYNC_POINT_CALLBACK("CompactionOutputs::PostCloseFile",
+                             (void*)&test_struct);
+
     // reset grandparent information
     grandparent_boundary_switched_num_ = 0;
     grandparent_overlapped_bytes_ =
@@ -385,6 +430,9 @@ Status CompactionOutputs::AddToOutput(
       range_tombstone_lower_bound_.Clear();
     }
   }
+
+  *last_iter_num =
+      c_iter.HasNumInputEntryScanned() ? c_iter.NumInputEntryScanned() : 0;
 
   // Open output file if necessary
   if (!HasBuilder()) {

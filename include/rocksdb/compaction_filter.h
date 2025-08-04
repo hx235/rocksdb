@@ -336,6 +336,8 @@ class CompactionFilter : public Customizable {
                                    std::string* /*skip_until*/) const {
     return Decision::kUndetermined;
   }
+
+  virtual bool SupportResume() const { return true; }
 };
 
 // Each thread of work involving creating table files will create a new

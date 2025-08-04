@@ -9,6 +9,8 @@
 
 #include "db/version_edit.h"
 
+#include <iostream>
+
 #include "db/blob/blob_index.h"
 #include "db/version_set.h"
 #include "logging/event_logger.h"
@@ -288,6 +290,153 @@ bool VersionEdit::EncodeTo(std::string* dst,
     char p = static_cast<char>(persist_user_defined_timestamps_);
     PutLengthPrefixedSlice(dst, Slice(&p, 1));
   }
+
+  // Encode compaction progress fields
+  if (!compaction_progress_next_key.empty() ||
+      compaction_progress_num_processed_input_keys > 0 ||
+      compaction_progress_num_processed_output_keys > 0 ||
+      !compaction_progress_output_files.empty()) {
+    // Encode next key
+    PutVarint32(dst, kCompactionProgressNextKey);
+    PutLengthPrefixedSlice(dst, Slice(compaction_progress_next_key));
+
+    // Encode processed input keys count
+    PutVarint32(dst, kCompactionProgressNumProcessedInputKeys);
+    PutVarint64(dst, compaction_progress_num_processed_input_keys);
+
+    // Encode processed output keys count
+    PutVarint32(dst, kCompactionProgressNumProcessedOutputKeys);
+    PutVarint64(dst, compaction_progress_num_processed_output_keys);
+
+    // Encode output files
+    PutVarint32(dst, kCompactionProgressOutputFiles);
+    // Write the number of output files
+    PutVarint32(dst,
+                static_cast<uint32_t>(compaction_progress_output_files.size()));
+    for (size_t i = 0; i < compaction_progress_output_files.size(); i++) {
+      const FileMetaData& f = compaction_progress_output_files[i];
+      if (!f.smallest.Valid() || !f.largest.Valid() ||
+          f.epoch_number == kUnknownEpochNumber) {
+        return false;
+      }
+      PutVarint32(dst, kNewFile4);
+      PutVarint32Varint64(dst, 12345 /* fake level */, f.fd.GetNumber());
+      PutVarint64(dst, f.fd.GetFileSize());
+      EncodeFileBoundaries(dst, f, 0 /* ts value*/);
+      PutVarint64Varint64(dst, f.fd.smallest_seqno, f.fd.largest_seqno);
+      PutVarint32(dst, NewFileCustomTag::kOldestAncesterTime);
+      std::string varint_oldest_ancester_time;
+      PutVarint64(&varint_oldest_ancester_time, f.oldest_ancester_time);
+
+      PutLengthPrefixedSlice(dst, Slice(varint_oldest_ancester_time));
+
+      PutVarint32(dst, NewFileCustomTag::kFileCreationTime);
+      std::string varint_file_creation_time;
+      PutVarint64(&varint_file_creation_time, f.file_creation_time);
+
+      PutLengthPrefixedSlice(dst, Slice(varint_file_creation_time));
+
+      PutVarint32(dst, NewFileCustomTag::kEpochNumber);
+      std::string varint_epoch_number;
+      PutVarint64(&varint_epoch_number, f.epoch_number);
+      PutLengthPrefixedSlice(dst, Slice(varint_epoch_number));
+
+      if (f.file_checksum_func_name != kUnknownFileChecksumFuncName) {
+        PutVarint32(dst, NewFileCustomTag::kFileChecksum);
+        PutLengthPrefixedSlice(dst, Slice(f.file_checksum));
+
+        PutVarint32(dst, NewFileCustomTag::kFileChecksumFuncName);
+        PutLengthPrefixedSlice(dst, Slice(f.file_checksum_func_name));
+      }
+
+      if (f.fd.GetPathId() != 0) {
+        PutVarint32(dst, NewFileCustomTag::kPathId);
+        char p = static_cast<char>(f.fd.GetPathId());
+        PutLengthPrefixedSlice(dst, Slice(&p, 1));
+      }
+      if (f.temperature != Temperature::kUnknown) {
+        PutVarint32(dst, NewFileCustomTag::kTemperature);
+        char p = static_cast<char>(f.temperature);
+        PutLengthPrefixedSlice(dst, Slice(&p, 1));
+      }
+      if (f.marked_for_compaction) {
+        PutVarint32(dst, NewFileCustomTag::kNeedCompaction);
+        char p = static_cast<char>(1);
+        PutLengthPrefixedSlice(dst, Slice(&p, 1));
+      }
+      if (has_min_log_number_to_keep_ && !min_log_num_written) {
+        PutVarint32(dst, NewFileCustomTag::kMinLogNumberToKeepHack);
+        std::string varint_log_number;
+        PutFixed64(&varint_log_number, min_log_number_to_keep_);
+        PutLengthPrefixedSlice(dst, Slice(varint_log_number));
+        min_log_num_written = true;
+      }
+      if (f.oldest_blob_file_number != kInvalidBlobFileNumber) {
+        PutVarint32(dst, NewFileCustomTag::kOldestBlobFileNumber);
+        std::string oldest_blob_file_number;
+        PutVarint64(&oldest_blob_file_number, f.oldest_blob_file_number);
+        PutLengthPrefixedSlice(dst, Slice(oldest_blob_file_number));
+      }
+      UniqueId64x2 unique_id = f.unique_id;
+
+      if (unique_id != kNullUniqueId64x2) {
+        PutVarint32(dst, NewFileCustomTag::kUniqueId);
+        std::string unique_id_str = EncodeUniqueIdBytes(&unique_id);
+        PutLengthPrefixedSlice(dst, Slice(unique_id_str));
+      }
+      if (f.compensated_range_deletion_size) {
+        PutVarint32(dst, kCompensatedRangeDeletionSize);
+        std::string compensated_range_deletion_size;
+        PutVarint64(&compensated_range_deletion_size,
+                    f.compensated_range_deletion_size);
+        PutLengthPrefixedSlice(dst, Slice(compensated_range_deletion_size));
+      }
+      if (f.tail_size) {
+        PutVarint32(dst, NewFileCustomTag::kTailSize);
+        std::string varint_tail_size;
+        PutVarint64(&varint_tail_size, f.tail_size);
+        PutLengthPrefixedSlice(dst, Slice(varint_tail_size));
+      }
+      if (!f.user_defined_timestamps_persisted) {
+        // The default value for the flag is true, it's only explicitly
+        // persisted when it's false. We are putting 0 as the value here to
+        // signal false (i.e. UDTS not persisted).
+        PutVarint32(dst, NewFileCustomTag::kUserDefinedTimestampsPersisted);
+        char p = static_cast<char>(0);
+        PutLengthPrefixedSlice(dst, Slice(&p, 1));
+      }
+
+      PutVarint32(dst, NewFileCustomTag::kTerminate);
+    }
+
+    // if (has_compaction_progress_) {
+    //   PutVarint32(dst, kCompactionProgress);
+    //   PutVarint32(dst, kCompactionProgressID);
+    //   PutVarint32(dst, compaction_progress_.id);
+    //   PutVarint32(dst, kCompactionProgressInputFiles);
+    //   // length
+    //   PutVarint32(dst, compaction_progress_.input_files.size());
+    //   for (const uint64_t& file : compaction_progress_.input_files) {
+    //     PutVarint64(dst, file);
+    //   }
+    //   PutVarint32(dst, kCompactionProgressFinished);
+    //   PutVarint32(dst, compaction_progress_.finished ? 1 : 0);
+    // }
+
+    // if (has_compaction_snapshot_) {
+    //   PutVarint32(dst, kCompactionSnapshot);
+    //   PutVarint32(dst, kCompactionSnapshotCompactionProgressID);
+    //   PutVarint32(dst, compaction_snapshot_.compaction_progress_id);
+    //   PutVarint32(dst, kCompactionSnapshotNextKey);
+    //   PutLengthPrefixedSlice(dst, Slice(compaction_snapshot_.next_key));
+    //   PutVarint32(dst, kCompactionSnapshotTempOutputFiles);
+    //   // length
+    //   PutVarint32(dst, compaction_snapshot_.temp_output_files.size());
+    //   for (const uint64_t& file : compaction_snapshot_.temp_output_files) {
+    //     PutVarint64(dst, file);
+    //   }
+    // }
+  }
   return true;
 }
 
@@ -314,7 +463,8 @@ bool VersionEdit::GetLevel(Slice* input, int* level, const char** /*msg*/) {
   }
 }
 
-const char* VersionEdit::DecodeNewFile4From(Slice* input) {
+const char* VersionEdit::DecodeNewFile4From(Slice* input,
+                                            bool add_to_compaction_progress) {
   const char* msg = nullptr;
   int level = 0;
   FileMetaData f;
@@ -436,7 +586,12 @@ const char* VersionEdit::DecodeNewFile4From(Slice* input) {
   }
   f.fd =
       FileDescriptor(number, path_id, file_size, smallest_seqno, largest_seqno);
-  new_files_.push_back(std::make_pair(level, f));
+
+  if (add_to_compaction_progress) {
+    compaction_progress_output_files.push_back(f);
+  } else {
+    new_files_.push_back(std::make_pair(level, f));
+  }
   return nullptr;
 }
 
@@ -767,6 +922,55 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
         }
         break;
 
+      case kCompactionProgressNextKey:
+        if (!GetLengthPrefixedSlice(&input, &str)) {
+          // msg = "persist_user_defined_timestamps";
+          assert(false);
+        } else {
+          compaction_progress_next_key.assign(str.data(), str.size());
+        }
+        break;
+
+      case kCompactionProgressNumProcessedInputKeys:
+        if (!GetVarint64(&input,
+                         &compaction_progress_num_processed_input_keys)) {
+          assert(false);
+        }
+        break;
+
+      case kCompactionProgressNumProcessedOutputKeys:
+        if (!GetVarint64(&input,
+                         &compaction_progress_num_processed_output_keys)) {
+          assert(false);
+        }
+        break;
+
+      case kCompactionProgressOutputFiles: {
+        uint32_t num_files = 0;
+        if (!GetVarint32(&input, &num_files)) {
+          assert(false);
+          break;
+        }
+
+        compaction_progress_output_files.clear();
+        compaction_progress_output_files.reserve(num_files);
+
+        for (uint32_t i = 0; i < num_files; i++) {
+          uint32_t sub_tag = 0;
+          if (!GetVarint32(&input, &sub_tag)) {
+            assert(false);
+            break;
+          }
+          if (sub_tag != kNewFile4) {
+            assert(false);
+            break;
+          }
+          // decode kNewFile4
+          DecodeNewFile4From(&input, true);
+        }
+        break;
+      }
+
       default:
         if (tag & kTagSafeIgnoreMask) {
           // Tag from future which can be safely ignored.
@@ -801,6 +1005,10 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
 std::string VersionEdit::DebugString(bool hex_key) const {
   std::string r;
   r.append("VersionEdit {");
+
+  // r.append("\n HasCompactionProgress: ");
+  // r.append(has_compaction_progress_ ? "true" : "false");
+
   if (has_db_id_) {
     r.append("\n  DB ID: ");
     r.append(db_id_);

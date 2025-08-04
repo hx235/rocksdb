@@ -43,6 +43,9 @@ class CompactionOutputs {
     std::shared_ptr<const TableProperties> table_properties;
   };
 
+  // all the compaction outputs so far
+  std::vector<Output> outputs_;
+
   CompactionOutputs() = delete;
 
   explicit CompactionOutputs(const Compaction* compaction,
@@ -250,7 +253,9 @@ class CompactionOutputs {
   // close and open new compaction output with the functions provided.
   Status AddToOutput(const CompactionIterator& c_iter,
                      const CompactionFileOpenFunc& open_file_func,
-                     const CompactionFileCloseFunc& close_file_func);
+                     const CompactionFileCloseFunc& close_file_func,
+                     std::string* last_user_key = nullptr,
+                     uint64_t* last_iter_num = nullptr);
 
   // Close the current output. `open_file_func` is needed for creating new file
   // for range-dels only output file.
@@ -295,9 +300,6 @@ class CompactionOutputs {
   std::unique_ptr<WritableFileWriter> file_writer_;
   uint64_t current_output_file_size_ = 0;
   SequenceNumber smallest_preferred_seqno_ = kMaxSequenceNumber;
-
-  // all the compaction outputs so far
-  std::vector<Output> outputs_;
 
   // BlobDB info
   std::vector<BlobFileAddition> blob_file_additions_;
@@ -402,6 +404,14 @@ struct OutputIterator {
   const std::vector<CompactionOutputs::Output>& b_;
   bool within_a;
   size_t idx_;
+};
+
+struct TestStruct {
+  Slice saved_iter_key_to_resume = "";
+  Slice saved_iter_value = "";
+  uint64_t last_iter_num = 0;
+  uint64_t last_num_output_records = 0;
+  std::vector<CompactionOutputs::Output> last_past_outputs;
 };
 
 }  // namespace ROCKSDB_NAMESPACE
