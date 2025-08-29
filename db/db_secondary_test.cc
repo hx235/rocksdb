@@ -1376,6 +1376,86 @@ TEST_F(DBSecondaryTest, OpenWithTransactionDB) {
   ASSERT_OK(TryOpenSecondary(options));
 }
 
+TEST_F(DBSecondaryTest, CheckAndCleanCompactionFilesIfNeeded) {
+  Options options = CurrentOptions();
+  options.env = env_;
+  Reopen(options);
+
+  DestroyDir(env_, secondary_path_).PermitUncheckedError();
+  ASSERT_OK(env_->CreateDir(secondary_path_));
+
+  OpenSecondary(options);
+  DBImplSecondary* secondary_db = static_cast<DBImplSecondary*>(db_secondary_);
+
+  // Create a non-SST file that should be preserved in all scenarios
+  std::string non_sst_file = secondary_path_ + "/MANIFEST-000789";
+  std::unique_ptr<WritableFile> writable_file;
+  ASSERT_OK(env_->NewWritableFile(non_sst_file, &writable_file, EnvOptions()));
+  ASSERT_OK(writable_file->Close());
+
+  // Scenario 1: No compaction progress file exists
+  // ---------------------------------------------
+
+  // Create some SST files that should be cleaned up
+  std::string sst_file1 = secondary_path_ + "/000123.sst";
+  std::string sst_file2 = secondary_path_ + "/000456.sst";
+
+  ASSERT_OK(env_->NewWritableFile(sst_file1, &writable_file, EnvOptions()));
+  ASSERT_OK(writable_file->Close());
+  ASSERT_OK(env_->NewWritableFile(sst_file2, &writable_file, EnvOptions()));
+  ASSERT_OK(writable_file->Close());
+
+  // Verify files exist
+  ASSERT_TRUE(env_->FileExists(sst_file1).ok());
+  ASSERT_TRUE(env_->FileExists(sst_file2).ok());
+  ASSERT_TRUE(env_->FileExists(non_sst_file).ok());
+
+  // Call the method under test using the public test function
+  std::unique_ptr<FSDirectory> output_dir1;
+  ASSERT_OK(secondary_db->TEST_InitializeCompactionWorkspace(&output_dir1));
+
+  // Verify SST files are deleted but non-SST file remains
+  ASSERT_FALSE(env_->FileExists(sst_file1).ok());
+  ASSERT_FALSE(env_->FileExists(sst_file2).ok());
+  ASSERT_TRUE(env_->FileExists(non_sst_file).ok());
+
+  // Scenario 2: Compaction progress file exists
+  // -----------------------------------------
+
+  // Create the compaction progress file
+  std::string progress_file_path = secondary_path_ + "/compaction_progress";
+  ASSERT_OK(
+      env_->NewWritableFile(progress_file_path, &writable_file, EnvOptions()));
+  ASSERT_OK(writable_file->Close());
+
+  // Create new SST files
+  ASSERT_OK(env_->NewWritableFile(sst_file1, &writable_file, EnvOptions()));
+  ASSERT_OK(writable_file->Close());
+  ASSERT_OK(env_->NewWritableFile(sst_file2, &writable_file, EnvOptions()));
+  ASSERT_OK(writable_file->Close());
+
+  // Verify files exist
+  ASSERT_TRUE(env_->FileExists(progress_file_path).ok());
+  ASSERT_TRUE(env_->FileExists(sst_file1).ok());
+  ASSERT_TRUE(env_->FileExists(sst_file2).ok());
+  ASSERT_TRUE(env_->FileExists(non_sst_file).ok());
+
+  // Call the method under test using the public test function
+  std::unique_ptr<FSDirectory> output_dir;
+  ASSERT_OK(secondary_db->TEST_InitializeCompactionWorkspace(&output_dir));
+
+  // Verify SST files are NOT deleted when progress file exists
+  ASSERT_TRUE(env_->FileExists(sst_file1).ok());
+  ASSERT_TRUE(env_->FileExists(sst_file2).ok());
+  ASSERT_TRUE(env_->FileExists(progress_file_path).ok());
+  ASSERT_TRUE(env_->FileExists(non_sst_file).ok());
+
+  // Clean up
+  ASSERT_OK(env_->DeleteFile(progress_file_path));
+  ASSERT_OK(env_->DeleteFile(sst_file1));
+  ASSERT_OK(env_->DeleteFile(sst_file2));
+  ASSERT_OK(env_->DeleteFile(non_sst_file));
+}
 class DBSecondaryTestWithTimestamp : public DBSecondaryTestBase {
  public:
   explicit DBSecondaryTestWithTimestamp()

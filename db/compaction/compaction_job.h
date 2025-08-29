@@ -178,7 +178,9 @@ class CompactionJob {
   // (currently for executing a remote compaction).
   void Prepare(
       std::optional<std::pair<std::optional<Slice>, std::optional<Slice>>>
-          known_single_subcompact);
+          known_single_subcompact,
+      const ResumableCompactionProgress& resumable_compaction_progress =
+          ResumableCompactionProgress{});
 
   // REQUIRED mutex not held
   // Launch threads for each subcompaction and wait for them to finish. After
@@ -224,6 +226,8 @@ class CompactionJob {
 
  private:
   friend class CompactionJobTestBase;
+  friend class CompactionJobTest;
+  friend class CompactionJobTest_PrepareSubcompactionStateTableProperties_Test;
 
   // Collect the following stats from input files and table properties
   // - num_input_files_in_non_output_levels
@@ -258,6 +262,9 @@ class CompactionJob {
   // each consecutive pair of slices. Then it divides these ranges into
   // consecutive groups such that each group has a similar size.
   void GenSubcompactionBoundaries();
+
+  void MaybeAssignResumableSubompactionProgress(
+      const ResumableCompactionProgress& resumable_compaction_progress);
 
   // Get the number of planned subcompactions based on max_subcompactions and
   // extra reserved resources
@@ -297,6 +304,7 @@ class CompactionJob {
   void FinalizeCompactionRun(const Status& status,
                              bool stats_built_from_input_table_prop,
                              uint64_t num_input_range_del);
+  void MaybePersistResumableCompactionProgress();
 
   CompactionServiceJobStatus ProcessKeyValueCompactionWithCompactionService(
       SubcompactionState* sub_compact);
@@ -359,8 +367,9 @@ class CompactionJob {
       const CompactionFilter* configured_compaction_filter,
       const CompactionFilter*& compaction_filter,
       std::unique_ptr<CompactionFilter>& compaction_filter_from_factory);
-  void InitializeReadOptions(ColumnFamilyData* cfd, ReadOptions& read_options,
-                             SubcompactionKeyBoundaries& boundaries);
+  void InitializeReadOptionsAndBoundaries(
+      size_t ts_sz, ReadOptions& read_options,
+      SubcompactionKeyBoundaries& boundaries);
   InternalIterator* CreateInputIterator(
       SubcompactionState* sub_compact, ColumnFamilyData* cfd,
       SubcompactionInternalIterators& iterators,
@@ -411,12 +420,12 @@ class CompactionJob {
   // update the thread status for starting a compaction.
   void ReportStartedCompaction(Compaction* compaction);
 
-  Status FinishCompactionOutputFile(const Status& input_status,
-                                    SubcompactionState* sub_compact,
-                                    CompactionOutputs& outputs,
-                                    const Slice& next_table_min_key,
-                                    const Slice* comp_start_user_key,
-                                    const Slice* comp_end_user_key);
+  Status FinishCompactionOutputFile(
+      const Status& input_status,
+      const ParsedInternalKey& prev_table_last_internal_key,
+      const Slice& next_table_min_key, const Slice* comp_start_user_key,
+      const Slice* comp_end_user_key, const CompactionIterator* c_iter,
+      SubcompactionState* sub_compact, CompactionOutputs& outputs);
   Status InstallCompactionResults(bool* compaction_released);
   Status OpenCompactionOutputFile(SubcompactionState* sub_compact,
                                   CompactionOutputs& outputs);
@@ -500,6 +509,41 @@ class CompactionJob {
   // The Compaction Read and Write priorities are the same for different
   // scenarios, such as write stalled.
   Env::IOPriority GetRateLimiterPriority();
+
+  Status MaybeResumeSubcompactionProgressOnInputIterator(
+      SubcompactionState* sub_compact, InternalIterator* input_iter);
+
+  // Read table properties directly from file without going through
+  // version/cache
+  Status ReadTablePropertiesDirectly(
+      const ImmutableOptions& ioptions, const MutableCFOptions& moptions,
+      const FileMetaData* file_meta, const ReadOptions& read_options,
+      std::shared_ptr<const TableProperties>* tp) const;
+
+  // Read table properties for multiple output files and populate the vector
+  Status ReadOutputFilesTableProperties(
+      const std::vector<FileMetaData>& output_files_allocation,
+      const ReadOptions& read_options,
+      std::vector<std::shared_ptr<const TableProperties>>&
+          output_files_table_properties,
+      bool is_proximal_level = false);
+
+  void RestoreCompactionOutputs(
+      ColumnFamilyData* cfd,
+      const std::vector<std::shared_ptr<const TableProperties>>&
+          output_files_table_properties,
+      std::vector<FileMetaData>& output_files_allocation,
+      std::vector<const FileMetaData*>& output_files,
+      uint64_t num_processed_output_records,
+      CompactionOutputs* outputs_to_restore);
+
+  bool ShouldUpdateResumableSubcompactionProgress(
+      const SubcompactionState* sub_compact,
+      const ParsedInternalKey& prev_table_last_internal_key,
+      const Slice& next_table_min_internal_key) const;
+  void UpdateResumableSubcompactionProgress(const CompactionIterator* c_iter,
+                                            const Slice next_table_min_key,
+                                            SubcompactionState* sub_compact);
 };
 
 // CompactionServiceInput is used the pass compaction information between two
@@ -649,7 +693,9 @@ class CompactionServiceCompactionJob : private CompactionJob {
 
   // REQUIRED: mutex held
   // Like CompactionJob::Prepare()
-  void Prepare();
+  void Prepare(
+      const ResumableCompactionProgress& resumable_compaction_progress =
+          ResumableCompactionProgress{});
 
   // Run the compaction in current thread and return the result
   Status Run();

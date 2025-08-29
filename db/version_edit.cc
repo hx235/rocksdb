@@ -10,6 +10,7 @@
 #include "db/version_edit.h"
 
 #include "db/blob/blob_index.h"
+#include "db/compaction/compaction_job.h"
 #include "db/version_set.h"
 #include "logging/event_logger.h"
 #include "rocksdb/slice.h"
@@ -206,7 +207,7 @@ bool VersionEdit::EncodeTo(std::string* dst,
       PutLengthPrefixedSlice(dst, Slice(unique_id_str));
     }
     if (f.compensated_range_deletion_size) {
-      PutVarint32(dst, kCompensatedRangeDeletionSize);
+      PutVarint32(dst, NewFileCustomTag::kCompensatedRangeDeletionSize);
       std::string compensated_range_deletion_size;
       PutVarint64(&compensated_range_deletion_size,
                   f.compensated_range_deletion_size);
@@ -288,6 +289,46 @@ bool VersionEdit::EncodeTo(std::string* dst,
     char p = static_cast<char>(persist_user_defined_timestamps_);
     PutLengthPrefixedSlice(dst, Slice(&p, 1));
   }
+
+  if (HasResumableCompactionProgress()) {
+    // Validate that ResumableCompactionProgress is not empty
+    if (resumable_compaction_progress_.empty()) {
+      // Cannot encode empty ResumableCompactionProgress
+      return false;
+    }
+
+    // Validate that each ResumableSubcompactionProgress has
+    // next_internal_key_to_compact
+    for (const auto& subcompaction_progress : resumable_compaction_progress_) {
+      if (subcompaction_progress.next_internal_key_to_compact.empty()) {
+        // Cannot encode ResumableSubcompactionProgress with empty
+        // next_internal_key_to_compact
+        return false;
+      }
+    }
+
+    PutVarint32(dst, kResumableCompactionProgress);
+
+    std::string progress_data;
+
+    // Version header for future compatibility
+    PutVarint32(&progress_data,
+                ResumableCompactionProgressVersion::kResumableVersion1);
+
+    // Subcompaction count
+    PutVarint32(&progress_data,
+                static_cast<uint32_t>(resumable_compaction_progress_.size()));
+
+    // Encode each subcompaction progress using tag-based format
+    for (const auto& subcompaction_progress : resumable_compaction_progress_) {
+      std::string subcompaction_data;
+      subcompaction_progress.EncodeTo(&subcompaction_data);
+      PutLengthPrefixedSlice(&progress_data, subcompaction_data);
+    }
+
+    PutLengthPrefixedSlice(dst, progress_data);
+  }
+
   return true;
 }
 
@@ -437,6 +478,223 @@ const char* VersionEdit::DecodeNewFile4From(Slice* input) {
   f.fd =
       FileDescriptor(number, path_id, file_size, smallest_seqno, largest_seqno);
   new_files_.push_back(std::make_pair(level, f));
+  return nullptr;
+}
+
+// Static method for encoding FileMetaData
+void VersionEdit::EncodeFileMetaDataTo(std::string* dst, const FileMetaData& f,
+                                       std::optional<size_t> ts_sz) {
+  // Encode file descriptor
+  PutVarint64(dst, f.fd.GetNumber());
+  PutVarint64(dst, f.fd.GetFileSize());
+
+  // Encode file boundaries
+  if (ts_sz.has_value() && ts_sz.value() > 0 &&
+      !f.user_defined_timestamps_persisted) {
+    std::string smallest_buf, largest_buf;
+    StripTimestampFromInternalKey(&smallest_buf, f.smallest.Encode(),
+                                  ts_sz.value());
+    StripTimestampFromInternalKey(&largest_buf, f.largest.Encode(),
+                                  ts_sz.value());
+    PutLengthPrefixedSlice(dst, smallest_buf);
+    PutLengthPrefixedSlice(dst, largest_buf);
+  } else {
+    PutLengthPrefixedSlice(dst, f.smallest.Encode());
+    PutLengthPrefixedSlice(dst, f.largest.Encode());
+  }
+
+  // Encode sequence numbers
+  PutVarint64(dst, f.fd.smallest_seqno);
+  PutVarint64(dst, f.fd.largest_seqno);
+
+  // Encode custom fields using the same format as NewFile4
+  PutVarint32(dst, NewFileCustomTag::kOldestAncesterTime);
+  std::string varint_oldest_ancester_time;
+  PutVarint64(&varint_oldest_ancester_time, f.oldest_ancester_time);
+  PutLengthPrefixedSlice(dst, Slice(varint_oldest_ancester_time));
+
+  PutVarint32(dst, NewFileCustomTag::kFileCreationTime);
+  std::string varint_file_creation_time;
+  PutVarint64(&varint_file_creation_time, f.file_creation_time);
+  PutLengthPrefixedSlice(dst, Slice(varint_file_creation_time));
+
+  PutVarint32(dst, NewFileCustomTag::kEpochNumber);
+  std::string varint_epoch_number;
+  PutVarint64(&varint_epoch_number, f.epoch_number);
+  PutLengthPrefixedSlice(dst, Slice(varint_epoch_number));
+
+  if (f.file_checksum_func_name != kUnknownFileChecksumFuncName) {
+    PutVarint32(dst, NewFileCustomTag::kFileChecksum);
+    PutLengthPrefixedSlice(dst, Slice(f.file_checksum));
+
+    PutVarint32(dst, NewFileCustomTag::kFileChecksumFuncName);
+    PutLengthPrefixedSlice(dst, Slice(f.file_checksum_func_name));
+  }
+
+  if (f.fd.GetPathId() != 0) {
+    PutVarint32(dst, NewFileCustomTag::kPathId);
+    char p = static_cast<char>(f.fd.GetPathId());
+    PutLengthPrefixedSlice(dst, Slice(&p, 1));
+  }
+  if (f.temperature != Temperature::kUnknown) {
+    PutVarint32(dst, NewFileCustomTag::kTemperature);
+    char p = static_cast<char>(f.temperature);
+    PutLengthPrefixedSlice(dst, Slice(&p, 1));
+  }
+  if (f.marked_for_compaction) {
+    PutVarint32(dst, NewFileCustomTag::kNeedCompaction);
+    char p = static_cast<char>(1);
+    PutLengthPrefixedSlice(dst, Slice(&p, 1));
+  }
+  if (f.oldest_blob_file_number != kInvalidBlobFileNumber) {
+    PutVarint32(dst, NewFileCustomTag::kOldestBlobFileNumber);
+    std::string oldest_blob_file_number;
+    PutVarint64(&oldest_blob_file_number, f.oldest_blob_file_number);
+    PutLengthPrefixedSlice(dst, Slice(oldest_blob_file_number));
+  }
+  UniqueId64x2 unique_id = f.unique_id;
+  if (unique_id != kNullUniqueId64x2) {
+    PutVarint32(dst, NewFileCustomTag::kUniqueId);
+    std::string unique_id_str = EncodeUniqueIdBytes(&unique_id);
+    PutLengthPrefixedSlice(dst, Slice(unique_id_str));
+  }
+  if (f.compensated_range_deletion_size) {
+    PutVarint32(dst, NewFileCustomTag::kCompensatedRangeDeletionSize);
+    std::string compensated_range_deletion_size;
+    PutVarint64(&compensated_range_deletion_size,
+                f.compensated_range_deletion_size);
+    PutLengthPrefixedSlice(dst, Slice(compensated_range_deletion_size));
+  }
+  if (f.tail_size) {
+    PutVarint32(dst, NewFileCustomTag::kTailSize);
+    std::string varint_tail_size;
+    PutVarint64(&varint_tail_size, f.tail_size);
+    PutLengthPrefixedSlice(dst, Slice(varint_tail_size));
+  }
+  if (!f.user_defined_timestamps_persisted) {
+    PutVarint32(dst, NewFileCustomTag::kUserDefinedTimestampsPersisted);
+    char p = static_cast<char>(0);
+    PutLengthPrefixedSlice(dst, Slice(&p, 1));
+  }
+
+  PutVarint32(dst, NewFileCustomTag::kTerminate);
+}
+
+// Static method for decoding FileMetaData
+const char* VersionEdit::DecodeFileMetaDataFrom(
+    Slice* input, FileMetaData* f, std::optional<size_t> /* ts_sz */) {
+  uint64_t number = 0;
+  uint32_t path_id = 0;
+  uint64_t file_size = 0;
+  SequenceNumber smallest_seqno = 0;
+  SequenceNumber largest_seqno = kMaxSequenceNumber;
+
+  if (!GetVarint64(input, &number) || !GetVarint64(input, &file_size) ||
+      !GetInternalKey(input, &f->smallest) ||
+      !GetInternalKey(input, &f->largest) ||
+      !GetVarint64(input, &smallest_seqno) ||
+      !GetVarint64(input, &largest_seqno)) {
+    return "FileMetaData basic fields";
+  }
+
+  // Decode custom fields using the same format as NewFile4
+  while (true) {
+    uint32_t custom_tag = 0;
+    Slice field;
+    if (!GetVarint32(input, &custom_tag)) {
+      return "FileMetaData custom field tag";
+    }
+    if (custom_tag == kTerminate) {
+      break;
+    }
+    if (!GetLengthPrefixedSlice(input, &field)) {
+      return "FileMetaData custom field length prefixed slice error";
+    }
+    switch (custom_tag) {
+      case kPathId:
+        if (field.size() != 1) {
+          return "path_id field wrong size";
+        }
+        path_id = field[0];
+        if (path_id > 3) {
+          return "path_id wrong value";
+        }
+        break;
+      case kOldestAncesterTime:
+        if (!GetVarint64(&field, &f->oldest_ancester_time)) {
+          return "invalid oldest ancester time";
+        }
+        break;
+      case kFileCreationTime:
+        if (!GetVarint64(&field, &f->file_creation_time)) {
+          return "invalid file creation time";
+        }
+        break;
+      case kEpochNumber:
+        if (!GetVarint64(&field, &f->epoch_number)) {
+          return "invalid epoch number";
+        }
+        break;
+      case kFileChecksum:
+        f->file_checksum = field.ToString();
+        break;
+      case kFileChecksumFuncName:
+        f->file_checksum_func_name = field.ToString();
+        break;
+      case kNeedCompaction:
+        if (field.size() != 1) {
+          return "need_compaction field wrong size";
+        }
+        f->marked_for_compaction = (field[0] == 1);
+        break;
+      case kOldestBlobFileNumber:
+        if (!GetVarint64(&field, &f->oldest_blob_file_number)) {
+          return "invalid oldest blob file number";
+        }
+        break;
+      case kTemperature:
+        if (field.size() != 1) {
+          return "temperature field wrong size";
+        } else {
+          Temperature casted_field = static_cast<Temperature>(field[0]);
+          if (casted_field <= Temperature::kCold) {
+            f->temperature = casted_field;
+          }
+        }
+        break;
+      case kUniqueId:
+        if (!DecodeUniqueIdBytes(field.ToString(), &f->unique_id).ok()) {
+          f->unique_id = kNullUniqueId64x2;
+          return "invalid unique id";
+        }
+        break;
+      case kCompensatedRangeDeletionSize:
+        if (!GetVarint64(&field, &f->compensated_range_deletion_size)) {
+          return "Invalid compensated range deletion size";
+        }
+        break;
+      case kTailSize:
+        if (!GetVarint64(&field, &f->tail_size)) {
+          return "invalid tail size";
+        }
+        break;
+      case kUserDefinedTimestampsPersisted:
+        if (field.size() != 1) {
+          return "user-defined timestamps persisted field wrong size";
+        }
+        f->user_defined_timestamps_persisted = (field[0] == 1);
+        break;
+      default:
+        if ((custom_tag & kCustomTagNonSafeIgnoreMask) != 0) {
+          // Should not proceed if cannot understand it
+          return "FileMetaData custom field not supported";
+        }
+        break;
+    }
+  }
+
+  f->fd =
+      FileDescriptor(number, path_id, file_size, smallest_seqno, largest_seqno);
   return nullptr;
 }
 
@@ -766,6 +1024,68 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
           has_persist_user_defined_timestamps_ = true;
         }
         break;
+
+      case kResumableCompactionProgress: {
+        Slice encoded;
+        if (!GetLengthPrefixedSlice(&input, &encoded)) {
+          msg = "ResumableCompactionProgress not prefixed by length";
+          break;
+        }
+
+        // Decode version for future compatibility
+        uint32_t version;
+        if (!GetVarint32(&encoded, &version)) {
+          msg = "ResumableCompactionProgress version";
+          break;
+        }
+
+        // Handle different versions
+        switch (version) {
+          case ResumableCompactionProgressVersion::kResumableVersion1: {
+            uint32_t subcompaction_count;
+            if (!GetVarint32(&encoded, &subcompaction_count)) {
+              msg = "ResumableCompactionProgress subcompaction count";
+              break;
+            }
+
+            // Validate that ResumableCompactionProgress is not empty
+            if (subcompaction_count == 0) {
+              msg = "ResumableCompactionProgress cannot be empty";
+              break;
+            }
+
+            ResumableCompactionProgress progress;
+            progress.reserve(subcompaction_count);
+
+            for (uint32_t i = 0; i < subcompaction_count; ++i) {
+              Slice subcompaction_encoded;
+              if (!GetLengthPrefixedSlice(&encoded, &subcompaction_encoded)) {
+                msg = "ResumableSubcompactionProgress data";
+                break;
+              }
+
+              ResumableSubcompactionProgress subcompaction_progress;
+              Status s =
+                  subcompaction_progress.DecodeFrom(&subcompaction_encoded);
+              if (!s.ok()) {
+                return s;
+              }
+
+              progress.push_back(std::move(subcompaction_progress));
+            }
+
+            if (msg == nullptr) {
+              SetResumableCompactionProgress(progress);
+            }
+            break;
+          }
+
+          default:
+            msg = "ResumableCompactionProgress unsupported version";
+            break;
+        }
+        break;
+      }
 
       default:
         if (tag & kTagSafeIgnoreMask) {

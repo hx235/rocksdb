@@ -823,12 +823,138 @@ Status DB::OpenAsSecondary(
   return s;
 }
 
+Status DBImplSecondary::ExistResumableCompactionProgressFile(bool* exists) {
+  std::string resumable_compaction_progress_path =
+      secondary_path_ + "/compaction_progress";
+  Status file_status =
+      fs_->FileExists(resumable_compaction_progress_path, IOOptions(), nullptr);
+
+  if (file_status.ok()) {
+    // File exists, log its presence
+    ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                   "Found resumable compaction progress file in temporary "
+                   "output directory: %s",
+                   resumable_compaction_progress_path.c_str());
+    *exists = true;
+  } else if (file_status.IsNotFound()) {
+    *exists = false;
+  } else {
+    // Some other error occurred when checking for the file
+    return file_status;
+  }
+
+  return Status::OK();
+}
+
+Status DBImplSecondary::CleanupCompactionOutputFiles() {
+  std::vector<std::string> files_to_delete;
+  Status status =
+      fs_->GetChildren(secondary_path_, IOOptions(), &files_to_delete, nullptr);
+  if (!status.ok()) {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                   "Failed to list files in temporary output directory: %s",
+                   status.ToString().c_str());
+    return status;
+  }
+
+  for (const auto& file_name : files_to_delete) {
+    if (file_name == "." || file_name == "..") {
+      continue;
+    }
+
+    // Only delete SST files, which are the temporary output files from
+    // compaction
+    if (file_name.find(".sst") != std::string::npos) {
+      std::string file_path = secondary_path_ + "/" + file_name;
+      Status delete_status = fs_->DeleteFile(file_path, IOOptions(), nullptr);
+      if (!delete_status.ok()) {
+        ROCKS_LOG_WARN(
+            immutable_db_options_.info_log,
+            "Failed to delete temporary compaction output SST file %s: %s",
+            file_path.c_str(), delete_status.ToString().c_str());
+      } else {
+        ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                       "Deleted temporary compaction output SST file: %s",
+                       file_path.c_str());
+      }
+    }
+  }
+
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "Cleared temporary compaction output SST files from directory: %s",
+      secondary_path_.c_str());
+  return Status::OK();
+}
+
+Status DBImplSecondary::ParseResumableCompactionProgress(
+    ResumableCompactionProgress* resumable_compaction_progress) {
+  // Fake function implementation - pretend to parse compaction progress file
+  std::string compaction_progress_path =
+      secondary_path_ + "/resumable_compaction_progress";
+
+  // Log that we're parsing the compaction progress (fake operation)
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "Parsing resumable compaction progress from file: %s",
+                 compaction_progress_path.c_str());
+
+  // Fill in fake progress data
+  if (resumable_compaction_progress != nullptr) {
+    ResumableSubcompactionProgress resumable_subcompaction_progress;
+    //
+    resumable_compaction_progress->push_back(resumable_subcompaction_progress);
+  }
+
+  // Always return OK status as this is a fake implementation
+  return Status::OK();
+}
+
+Status DBImplSecondary::InitializeCompactionWorkspace(
+    std::unique_ptr<FSDirectory>* output_dir) {
+  // First ensure the output directory exists
+  Status s = CreateAndNewDirectory(fs_.get(), secondary_path_, output_dir);
+  if (!s.ok()) {
+    return s;
+  }
+
+  // Depending on OPTIONS, if false, we may clean up progress file
+  // Then check for compaction progress file
+  bool file_exists = false;
+  s = ExistResumableCompactionProgressFile(&file_exists);
+  if (!s.ok()) {
+    return s;
+  }
+
+  if (file_exists) {
+    // Parse compaction progress only if the file exists
+    s = ParseResumableCompactionProgress(&resumable_compaction_progress_);
+    if (!s.ok()) {
+      return s;
+    }
+  } else {
+    // If no progress file exists, clean up any temporary SST files
+    s = CleanupCompactionOutputFiles();
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  return Status::OK();
+}
+
 Status DBImplSecondary::CompactWithoutInstallation(
     const OpenAndCompactOptions& options, ColumnFamilyHandle* cfh,
     const CompactionServiceInput& input, CompactionServiceResult* result) {
   if (options.canceled && options.canceled->load(std::memory_order_acquire)) {
     return Status::Incomplete(Status::SubCode::kManualCompactionPaused);
   }
+
+  std::unique_ptr<FSDirectory> output_dir;
+  Status s = InitializeCompactionWorkspace(&output_dir);
+  if (!s.ok()) {
+    return s;
+  }
+
   InstrumentedMutexLock l(&mutex_);
   auto cfd = static_cast_with_check<ColumnFamilyHandleImpl>(cfh)->cfd();
   if (!cfd) {
@@ -856,7 +982,7 @@ Status DBImplSecondary::CompactWithoutInstallation(
       cfd->ioptions().level_compaction_dynamic_level_bytes);
 
   std::vector<CompactionInputFiles> input_files;
-  Status s = cfd->compaction_picker()->GetCompactionInputsFromFileNumbers(
+  s = cfd->compaction_picker()->GetCompactionInputsFromFileNumbers(
       &input_files, &input_set, vstorage, comp_options);
   if (!s.ok()) {
     ROCKS_LOG_ERROR(
@@ -889,13 +1015,6 @@ Status DBImplSecondary::CompactWithoutInstallation(
   assert(c != nullptr);
   c->FinalizeInputInfo(version);
 
-  // Create output directory if it's not existed yet
-  std::unique_ptr<FSDirectory> output_dir;
-  s = CreateAndNewDirectory(fs_.get(), secondary_path_, &output_dir);
-  if (!s.ok()) {
-    return s;
-  }
-
   LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL,
                        immutable_db_options_.info_log.get());
 
@@ -913,7 +1032,7 @@ Status DBImplSecondary::CompactWithoutInstallation(
       options.canceled ? *options.canceled : kManualCompactionCanceledFalse_,
       input.db_id, db_session_id_, secondary_path_, input, result);
 
-  compaction_job.Prepare();
+  compaction_job.Prepare(resumable_compaction_progress_);
 
   mutex_.Unlock();
   s = compaction_job.Run();

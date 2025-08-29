@@ -794,6 +794,220 @@ TEST(FileMetaDataTest, UpdateBoundariesBlobIndex) {
   }
 }
 
+TEST_F(VersionEditTest, ResumableCompactionProgress) {
+  // Test the bidirectional serialization of ResumableCompactionProgress
+  VersionEdit edit_original;
+
+  // Create test data for ResumableCompactionProgress
+  ResumableCompactionProgress progress;
+
+  // Create first subcompaction progress with various fields populated
+  ResumableSubcompactionProgress subcompaction1;
+  subcompaction1.next_internal_key_to_compact = "test_key_123";
+  subcompaction1.num_processed_input_records = 1000;
+  subcompaction1.num_processed_output_records = 800;
+  subcompaction1.num_processed_proximal_level_output_records = 200;
+
+  // Create some test FileMetaData for output files
+  FileMetaData file1;
+  file1.fd = FileDescriptor(100, 0, 1024, 50, 150);
+  file1.smallest = InternalKey("a", 50, kTypeValue);
+  file1.largest = InternalKey("z", 150, kTypeValue);
+  file1.oldest_ancester_time = 12345;
+  file1.file_creation_time = 67890;
+  file1.epoch_number = 10;
+  file1.file_checksum = "checksum1";
+  file1.file_checksum_func_name = "crc32c";
+  file1.marked_for_compaction = false;
+  file1.temperature = Temperature::kUnknown;
+
+  FileMetaData file2;
+  file2.fd = FileDescriptor(101, 0, 2048, 200, 250);
+  file2.smallest = InternalKey("b", 200, kTypeValue);
+  file2.largest = InternalKey("y", 250, kTypeValue);
+  file2.oldest_ancester_time = 12346;
+  file2.file_creation_time = 67891;
+  file2.epoch_number = 11;
+  file2.file_checksum = "checksum2";
+  file2.file_checksum_func_name = "crc32c";
+  file2.marked_for_compaction = true;
+  file2.temperature = Temperature::kHot;
+
+  // Store files in temporary allocation for serialization
+  subcompaction1.temporary_output_files_allocation.push_back(file1);
+  subcompaction1.temporary_proximal_level_output_files_allocation.push_back(
+      file2);
+
+  // Set up pointers to the allocated files (simulate normal operation)
+  subcompaction1.output_files.push_back(
+      &subcompaction1.temporary_output_files_allocation[0]);
+  subcompaction1.proximal_level_output_files.push_back(
+      &subcompaction1.temporary_proximal_level_output_files_allocation[0]);
+
+  // Create second subcompaction progress with minimal data
+  ResumableSubcompactionProgress subcompaction2;
+  subcompaction2.next_internal_key_to_compact =
+      "start_key_456";  // Must not be empty
+  subcompaction2.num_processed_input_records = 500;
+  subcompaction2.num_processed_output_records = 400;
+  subcompaction2.num_processed_proximal_level_output_records =
+      0;  // No proximal level files
+
+  // Add subcompactions to progress
+  progress.push_back(subcompaction1);
+  progress.push_back(subcompaction2);
+
+  // Set the progress in VersionEdit
+  edit_original.SetResumableCompactionProgress(progress);
+
+  // Verify the edit reports it has resumable compaction progress
+  ASSERT_TRUE(edit_original.HasResumableCompactionProgress());
+
+  // Encode the VersionEdit
+  std::string encoded;
+  ASSERT_TRUE(edit_original.EncodeTo(&encoded, 0 /* ts_sz */));
+
+  // Decode the VersionEdit
+  VersionEdit edit_decoded;
+  Status s = edit_decoded.DecodeFrom(encoded);
+  ASSERT_OK(s) << s.ToString();
+
+  // Verify the decoded edit has resumable compaction progress
+  ASSERT_TRUE(edit_decoded.HasResumableCompactionProgress());
+
+  const ResumableCompactionProgress& decoded_progress =
+      edit_decoded.GetResumableCompactionProgress();
+
+  // Verify the number of subcompactions matches original
+  ASSERT_EQ(decoded_progress.size(), progress.size());
+
+  // Verify first subcompaction progress against original
+  const ResumableSubcompactionProgress& decoded_sub1 = decoded_progress[0];
+  ASSERT_EQ(decoded_sub1.next_internal_key_to_compact,
+            subcompaction1.next_internal_key_to_compact);
+  ASSERT_EQ(decoded_sub1.num_processed_input_records,
+            subcompaction1.num_processed_input_records);
+  ASSERT_EQ(decoded_sub1.num_processed_output_records,
+            subcompaction1.num_processed_output_records);
+  ASSERT_EQ(decoded_sub1.num_processed_proximal_level_output_records,
+            subcompaction1.num_processed_proximal_level_output_records);
+
+  // Verify output files were correctly deserialized
+  ASSERT_EQ(decoded_sub1.temporary_output_files_allocation.size(),
+            subcompaction1.temporary_output_files_allocation.size());
+  ASSERT_EQ(
+      decoded_sub1.temporary_proximal_level_output_files_allocation.size(),
+      subcompaction1.temporary_proximal_level_output_files_allocation.size());
+
+  // Verify file metadata matches original file1
+  const FileMetaData& decoded_file1 =
+      decoded_sub1.temporary_output_files_allocation[0];
+  ASSERT_EQ(decoded_file1.fd.GetNumber(), file1.fd.GetNumber());
+  ASSERT_EQ(decoded_file1.fd.GetFileSize(), file1.fd.GetFileSize());
+  ASSERT_EQ(decoded_file1.fd.smallest_seqno, file1.fd.smallest_seqno);
+  ASSERT_EQ(decoded_file1.fd.largest_seqno, file1.fd.largest_seqno);
+  ASSERT_EQ(decoded_file1.smallest.user_key().ToString(),
+            file1.smallest.user_key().ToString());
+  ASSERT_EQ(decoded_file1.largest.user_key().ToString(),
+            file1.largest.user_key().ToString());
+  ASSERT_EQ(decoded_file1.oldest_ancester_time, file1.oldest_ancester_time);
+  ASSERT_EQ(decoded_file1.file_creation_time, file1.file_creation_time);
+  ASSERT_EQ(decoded_file1.epoch_number, file1.epoch_number);
+  ASSERT_EQ(decoded_file1.file_checksum, file1.file_checksum);
+  ASSERT_EQ(decoded_file1.file_checksum_func_name,
+            file1.file_checksum_func_name);
+  ASSERT_EQ(decoded_file1.marked_for_compaction, file1.marked_for_compaction);
+  ASSERT_EQ(decoded_file1.temperature, file1.temperature);
+
+  // Verify file metadata matches original file2
+  const FileMetaData& decoded_file2 =
+      decoded_sub1.temporary_proximal_level_output_files_allocation[0];
+  ASSERT_EQ(decoded_file2.fd.GetNumber(), file2.fd.GetNumber());
+  ASSERT_EQ(decoded_file2.fd.GetFileSize(), file2.fd.GetFileSize());
+  ASSERT_EQ(decoded_file2.fd.smallest_seqno, file2.fd.smallest_seqno);
+  ASSERT_EQ(decoded_file2.fd.largest_seqno, file2.fd.largest_seqno);
+  ASSERT_EQ(decoded_file2.smallest.user_key().ToString(),
+            file2.smallest.user_key().ToString());
+  ASSERT_EQ(decoded_file2.largest.user_key().ToString(),
+            file2.largest.user_key().ToString());
+  ASSERT_EQ(decoded_file2.oldest_ancester_time, file2.oldest_ancester_time);
+  ASSERT_EQ(decoded_file2.file_creation_time, file2.file_creation_time);
+  ASSERT_EQ(decoded_file2.epoch_number, file2.epoch_number);
+  ASSERT_EQ(decoded_file2.file_checksum, file2.file_checksum);
+  ASSERT_EQ(decoded_file2.file_checksum_func_name,
+            file2.file_checksum_func_name);
+  ASSERT_EQ(decoded_file2.marked_for_compaction, file2.marked_for_compaction);
+  ASSERT_EQ(decoded_file2.temperature, file2.temperature);
+
+  // Verify second subcompaction progress against original
+  const ResumableSubcompactionProgress& decoded_sub2 = decoded_progress[1];
+  ASSERT_EQ(decoded_sub2.next_internal_key_to_compact,
+            subcompaction2.next_internal_key_to_compact);
+  ASSERT_EQ(decoded_sub2.num_processed_input_records,
+            subcompaction2.num_processed_input_records);
+  ASSERT_EQ(decoded_sub2.num_processed_output_records,
+            subcompaction2.num_processed_output_records);
+  ASSERT_EQ(decoded_sub2.num_processed_proximal_level_output_records,
+            subcompaction2.num_processed_proximal_level_output_records);
+
+  // Verify no output files for second subcompaction (matches original)
+  ASSERT_EQ(decoded_sub2.temporary_output_files_allocation.size(),
+            subcompaction2.temporary_output_files_allocation.size());
+  ASSERT_EQ(
+      decoded_sub2.temporary_proximal_level_output_files_allocation.size(),
+      subcompaction2.temporary_proximal_level_output_files_allocation.size());
+
+  // Test the ToString() method against the decoded progress (which has files in
+  // temporary allocation)
+  std::string debug_str = decoded_sub1.ToString();
+  ASSERT_TRUE(debug_str.find("next_key=SET") != std::string::npos);
+  ASSERT_TRUE(debug_str.find(
+                  "input_records=" +
+                  std::to_string(subcompaction1.num_processed_input_records)) !=
+              std::string::npos);
+  ASSERT_TRUE(debug_str.find("output_files=1") !=
+              std::string::npos);  // decoded_sub1 should have 1 output file
+  ASSERT_TRUE(debug_str.find("proximal_files=1") !=
+              std::string::npos);  // decoded_sub1 should have 1 proximal file
+  ASSERT_TRUE(
+      debug_str.find(
+          "output_records=" +
+          std::to_string(subcompaction1.num_processed_output_records)) !=
+      std::string::npos);
+  ASSERT_TRUE(
+      debug_str.find(
+          "proximal_records=" +
+          std::to_string(
+              subcompaction1.num_processed_proximal_level_output_records)) !=
+      std::string::npos);
+
+  std::string debug_str2 = decoded_sub2.ToString();
+  ASSERT_TRUE(debug_str2.find("next_key=SET") != std::string::npos);
+  ASSERT_TRUE(debug_str2.find(
+                  "input_records=" +
+                  std::to_string(subcompaction2.num_processed_input_records)) !=
+              std::string::npos);
+  ASSERT_TRUE(debug_str2.find("output_files=0") !=
+              std::string::npos);  // decoded_sub2 should have 0 output files
+  ASSERT_TRUE(debug_str2.find("proximal_files=0") !=
+              std::string::npos);  // decoded_sub2 should have 0 proximal files
+
+  // Test Clear() method
+  ResumableSubcompactionProgress test_clear = decoded_sub1;
+  test_clear.Clear();
+  ASSERT_EQ(test_clear.next_internal_key_to_compact, "");
+  ASSERT_EQ(test_clear.num_processed_input_records, 0);
+  ASSERT_EQ(test_clear.num_processed_output_records, 0);
+  ASSERT_EQ(test_clear.num_processed_proximal_level_output_records, 0);
+  ASSERT_EQ(test_clear.temporary_output_files_allocation.size(), 0);
+  ASSERT_EQ(test_clear.temporary_proximal_level_output_files_allocation.size(),
+            0);
+
+  // Test ClearResumableCompactionProgress()
+  edit_decoded.ClearResumableCompactionProgress();
+  ASSERT_FALSE(edit_decoded.HasResumableCompactionProgress());
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

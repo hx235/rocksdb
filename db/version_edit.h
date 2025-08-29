@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,10 @@
 #include "util/autovector.h"
 
 namespace ROCKSDB_NAMESPACE {
+
+// Forward declaration
+struct ResumableSubcompactionProgress;
+using ResumableCompactionProgress = std::vector<ResumableSubcompactionProgress>;
 
 // Tag numbers for serialized VersionEdit.  These numbers are written to
 // disk and should not be changed. The number should be forward compatible so
@@ -72,6 +77,29 @@ enum Tag : uint32_t {
   kWalAddition2,
   kWalDeletion2,
   kPersistUserDefinedTimestamps,
+  kResumableCompactionProgress =
+      kTagSafeIgnoreMask + 100,  // Forward compatible tag
+};
+
+// Tag-based serialization for ResumableSubcompactionProgress fields
+enum ResumableSubcompactionCustomTag : uint32_t {
+  kResumableTerminate = 1,  // End of fields marker
+
+  // Core resumption data (safe to ignore for old code)
+  kNextInternalKeyToCompact = 2,
+  kNumProcessedInputRecords = 3,
+  kOutputFiles = 4,
+  kProximalLevelOutputFiles = 5,
+  kNumProcessedOutputRecords = 6,
+  kNumProcessedProximalLevelOutputRecords = 7,
+
+  // If this bit is set, old code must fail if it doesn't understand the field
+  kResumableCustomTagNonSafeIgnoreMask = 1 << 6,
+};
+
+// Version for ResumableCompactionProgress format evolution
+enum ResumableCompactionProgressVersion : uint32_t {
+  kResumableVersion1 = 1,  // Initial tag-based format
 };
 
 enum NewFileCustomTag : uint32_t {
@@ -735,6 +763,33 @@ class VersionEdit {
     full_history_ts_low_ = std::move(full_history_ts_low);
   }
 
+  // Resumable compaction progress methods
+  void SetResumableCompactionProgress(
+      const ResumableCompactionProgress& progress) {
+    has_resumable_compaction_progress_ = true;
+    resumable_compaction_progress_ = progress;
+  }
+
+  bool HasResumableCompactionProgress() const {
+    return has_resumable_compaction_progress_;
+  }
+
+  const ResumableCompactionProgress& GetResumableCompactionProgress() const {
+    return resumable_compaction_progress_;
+  }
+
+  void ClearResumableCompactionProgress() {
+    has_resumable_compaction_progress_ = false;
+    resumable_compaction_progress_.clear();
+  }
+
+  // Helper methods for FileMetaData encoding (make them public static)
+  static void EncodeFileMetaDataTo(std::string* dst, const FileMetaData& f,
+                                   std::optional<size_t> ts_sz = std::nullopt);
+  static const char* DecodeFileMetaDataFrom(
+      Slice* input, FileMetaData* f,
+      std::optional<size_t> ts_sz = std::nullopt);
+
   // return true on success.
   // `ts_sz` is the size in bytes for the user-defined timestamp contained in
   // a user key. This argument is optional because it's only required for
@@ -816,6 +871,10 @@ class VersionEdit {
   std::string full_history_ts_low_;
   bool persist_user_defined_timestamps_ = true;
 
+  // Resumable compaction progress data
+  bool has_resumable_compaction_progress_ = false;
+  ResumableCompactionProgress resumable_compaction_progress_;
+
   // Newly created table files and blob files are eligible for deletion if they
   // are not registered as live files after the background jobs creating them
   // have finished. In case committing the VersionEdit containing such changes
@@ -825,6 +884,95 @@ class VersionEdit {
   // Since table files and blob files share the same file number space, we just
   // record the file number here.
   autovector<uint64_t> files_to_quarantine_;
+};
+
+// Structure to hold sub-compaction progress information for resumable
+// compaction Full definition placed here after all dependencies are declared
+struct ResumableSubcompactionProgress {
+  // Next internal key to continue compaction from (empty means start from
+  // beginning)
+  std::string next_internal_key_to_compact;
+
+  // Number of input records processed so far
+  uint64_t num_processed_input_records = 0;
+
+  // Output files created so far (last level and proximal level)
+  std::vector<const FileMetaData*> output_files;
+  std::vector<const FileMetaData*> proximal_level_output_files;
+
+  // Number of records written to output files
+  uint64_t num_processed_output_records = 0;
+  uint64_t num_processed_proximal_level_output_records = 0;
+
+  // Temporary storage for file allocation during deserialization
+  std::vector<FileMetaData> temporary_output_files_allocation;
+  std::vector<FileMetaData> temporary_proximal_level_output_files_allocation;
+
+  ResumableSubcompactionProgress() = default;
+
+  // Clear all progress data
+  void Clear() {
+    next_internal_key_to_compact.clear();
+    num_processed_input_records = 0;
+    output_files.clear();
+    proximal_level_output_files.clear();
+    num_processed_output_records = 0;
+    num_processed_proximal_level_output_records = 0;
+    temporary_output_files_allocation.clear();
+    temporary_proximal_level_output_files_allocation.clear();
+  }
+
+  // Serialization methods
+  void EncodeTo(std::string* dst) const;
+  Status DecodeFrom(Slice* input);
+
+  // Helper accessor methods
+  std::vector<const FileMetaData*>& OutputFiles(bool is_proximal_level) {
+    return is_proximal_level ? proximal_level_output_files : output_files;
+  }
+
+  const std::vector<const FileMetaData*>& OutputFiles(
+      bool is_proximal_level) const {
+    return is_proximal_level ? proximal_level_output_files : output_files;
+  }
+
+  std::vector<FileMetaData>& TemporaryOutputsFilesAllocation(
+      bool is_proximal_level) {
+    return is_proximal_level ? temporary_proximal_level_output_files_allocation
+                             : temporary_output_files_allocation;
+  }
+
+  uint64_t& NumProcessedOutputRecords(bool is_proximal_level) {
+    return is_proximal_level ? num_processed_proximal_level_output_records
+                             : num_processed_output_records;
+  }
+
+  const uint64_t& NumProcessedOutputRecords(bool is_proximal_level) const {
+    return is_proximal_level ? num_processed_proximal_level_output_records
+                             : num_processed_output_records;
+  }
+
+  // Debug string representation
+  std::string ToString() const {
+    std::ostringstream oss;
+    oss << "ResumableSubcompactionProgress{";
+    oss << " next_key="
+        << (next_internal_key_to_compact.empty() ? "NONE" : "SET");
+    oss << ", input_records=" << num_processed_input_records;
+    oss << ", output_files=" << output_files.size();
+    oss << ", proximal_files=" << proximal_level_output_files.size();
+    oss << ", output_records=" << num_processed_output_records;
+    oss << ", proximal_records=" << num_processed_proximal_level_output_records;
+    oss << " }";
+    return oss.str();
+  }
+
+ private:
+  // Helper methods for encoding/decoding
+  void EncodeOutputFiles(std::string* dst,
+                         const std::vector<const FileMetaData*>& files) const;
+  Status DecodeOutputFiles(Slice* input,
+                           std::vector<FileMetaData>& files_allocation);
 };
 
 }  // namespace ROCKSDB_NAMESPACE

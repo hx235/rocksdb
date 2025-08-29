@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "db/compaction/compaction_job.h"
 #include "db/db_impl/db_impl.h"
 #include "logging/logging.h"
 
@@ -255,6 +256,11 @@ class DBImplSecondary : public DBImpl {
                                          CompactionServiceResult* result) {
     return CompactWithoutInstallation(options, cfh, input, result);
   }
+
+  Status TEST_InitializeCompactionWorkspace(
+      std::unique_ptr<FSDirectory>* output_dir) {
+    return InitializeCompactionWorkspace(output_dir);
+  }
 #endif  // NDEBUG
 
  protected:
@@ -303,6 +309,31 @@ class DBImplSecondary : public DBImpl {
                                     const CompactionServiceInput& input,
                                     CompactionServiceResult* result);
 
+  // Prepares the output directory for compaction:
+  // 1. Ensures the output directory exists
+  // 2. Checks for compaction progress file that indicates an ongoing compaction
+  // 3. If no progress file exists, cleans up temporary SST files from previous
+  //    incomplete compactions
+  // Returns OK on success, non-OK if directory creation, file checking, or
+  // cleanup fails.
+  Status InitializeCompactionWorkspace(
+      std::unique_ptr<FSDirectory>* output_dir);
+
+ private:
+  // Checks if compaction progress file exists in the secondary path.
+  // Returns true if the file exists, false if not found.
+  // Returns error status if checking file existence fails.
+  Status ExistResumableCompactionProgressFile(bool* exists);
+
+  // Cleans up temporary SST files from previous incomplete compactions.
+  // Returns OK on success, non-OK if listing directory or deleting files fails.
+  Status CleanupCompactionOutputFiles();
+
+  // Parse compaction progress from the progress file
+  // This is a fake implementation that always returns Status::OK()
+  Status ParseResumableCompactionProgress(
+      ResumableCompactionProgress* resumable_compaction_progress);
+
   // Cache log readers for each log number, used for continue WAL replay
   // after recovery
   std::map<uint64_t, std::unique_ptr<LogReaderContainer>> log_readers_;
@@ -311,6 +342,9 @@ class DBImplSecondary : public DBImpl {
   std::unordered_map<ColumnFamilyData*, uint64_t> cfd_to_current_log_;
 
   const std::string secondary_path_;
+
+  // May not need to be stored
+  ResumableCompactionProgress resumable_compaction_progress_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

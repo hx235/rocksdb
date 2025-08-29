@@ -14,6 +14,7 @@
 
 #include "db/blob/blob_index.h"
 #include "db/column_family.h"
+#include "db/compaction/compaction_state.h"
 #include "db/db_impl/db_impl.h"
 #include "db/error_handler.h"
 #include "db/version_set.h"
@@ -766,11 +767,17 @@ class CompactionJobTestBase : public testing::Test {
 // TODO(icanadi) Make it simpler once we mock out VersionSet
 class CompactionJobTest : public CompactionJobTestBase {
  public:
+  // CompactionJobTest()
+  //     : CompactionJobTestBase(
+  //           test::PerThreadDBPath("compaction_job_test"),
+  //           BytewiseComparator(),
+  //           [](uint64_t /*ts*/) { return ""; }, /*test_io_priority=*/false,
+  //           TableTypeForTest::kMockTable) {}
   CompactionJobTest()
       : CompactionJobTestBase(
             test::PerThreadDBPath("compaction_job_test"), BytewiseComparator(),
             [](uint64_t /*ts*/) { return ""; }, /*test_io_priority=*/false,
-            TableTypeForTest::kMockTable) {}
+            TableTypeForTest::kBlockBasedTable) {}
 };
 
 TEST_F(CompactionJobTest, Simple) {
@@ -2409,6 +2416,767 @@ TEST_F(CompactionJobIOPriorityTest, GetRateLimiterPriority) {
                 Env::IO_LOW, Env::IO_LOW);
 }
 
+TEST_F(CompactionJobTest, AbortCompactionAfterFirstOutputFile) {
+  NewDB();
+
+  // PHASE 1: Setup input files for compaction
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key1", 5U, kTypeValue), "val1"},
+  });
+  AddMockFile(file1);
+
+  auto file2 = mock::MakeMockFile({
+      {KeyStr("key2", 4U, kTypeValue), "val2"},
+      {KeyStr("key3", 4U, kTypeValue), "val3"},
+  });
+  AddMockFile(file2);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+  ASSERT_EQ(2U, files.size());
+
+  // PHASE 2: Create compaction configuration
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  // PHASE 3: Create compaction job for initial run
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  std::atomic<bool> manual_compaction_canceled = false;
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  // PHASE 4: Setup sync points to capture abort behavior
+  bool first_output_captured = false;
+  ResumableCompactionProgress resumable_compaction_progress;
+
+  // Stop compaction when encountering "key2" to trigger early termination
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::ShouldStopBefore::manual_decision", [](void* p) {
+        auto* pair = static_cast<std::pair<bool*, const Slice>*>(p);
+        if (pair->second.ToString().find("key2") != std::string::npos) {
+          *(pair->first) = true;
+        }
+      });
+
+  // Capture when first output file is fully created, then trigger shutdown
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::FinishCompactionOutputFile::FileMetaDataFullyPopulated",
+      [&](void* /*arg*/) {
+        if (!first_output_captured) {
+          first_output_captured = true;
+          // shutting_down_.store(true);
+          manual_compaction_canceled.store(true);
+        }
+      });
+
+  // Capture compaction progress for later resume
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::FinalizeCompactionRun::WriteOutProgress", [&](void* arg) {
+        resumable_compaction_progress =
+            *(static_cast<ResumableCompactionProgress*>(arg));
+      });
+
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  // PHASE 5: Run compaction that should abort after first output file
+  compaction_job.Prepare(std::nullopt);
+  mutex_.Unlock();
+
+  Status s = compaction_job.Run();
+  ASSERT_TRUE(s.IsManualCompactionPaused());
+
+  // Clean up the failed compaction
+  mutex_.Lock();
+  bool compaction_released = false;
+  Status install_status = compaction_job.Install(&compaction_released);
+  ASSERT_TRUE(install_status.IsManualCompactionPaused());
+  compaction.ReleaseCompactionFiles(s);
+  mutex_.Unlock();
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  // PHASE 6: Verify abort results
+  ASSERT_TRUE(first_output_captured);
+  ASSERT_EQ(1, resumable_compaction_progress.size());
+  ASSERT_EQ(1, resumable_compaction_progress[0]
+                   .OutputFiles(false /* is_proximal_level */)
+                   .size());
+
+  auto first_output_file_metadata =
+      resumable_compaction_progress[0].OutputFiles(false)[0];
+  std::string file_path =
+      GenerateFileName(first_output_file_metadata->fd.GetNumber());
+  ASSERT_OK(env_->FileExists(file_path));
+
+  uint64_t file_size = 0;
+  ASSERT_OK(env_->GetFileSize(file_path, &file_size));
+  ASSERT_GT(file_size, 0U);
+  ASSERT_GT(first_output_file_metadata->fd.GetNumber(), 0U);
+  ASSERT_GT(first_output_file_metadata->fd.GetFileSize(), 0U);
+
+  auto next_internal_key_to_compact =
+      resumable_compaction_progress[0].next_internal_key_to_compact;
+  ASSERT_GT(next_internal_key_to_compact.size(), 0);
+
+  // PHASE 7: Resume compaction from where it left off
+  shutting_down_.store(false);
+
+  // Create new compaction for resume with same input files
+  std::vector<CompactionInputFiles> resume_compaction_input_files;
+  CompactionInputFiles resume_compaction_level;
+  resume_compaction_level.level = input_level;
+  resume_compaction_level.files.insert(resume_compaction_level.files.end(),
+                                       files.begin(), files.end());
+  resume_compaction_input_files.push_back(resume_compaction_level);
+
+  std::vector<FileMetaData*> resume_grandparents;
+  Compaction resume_compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      resume_compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, resume_grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  resume_compaction.FinalizeInputInfo(cfd->current());
+
+  // Create resume compaction job
+  LogBuffer resume_log_buffer(InfoLogLevel::INFO_LEVEL,
+                              db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger resume_event_logger(db_options_.info_log.get());
+
+  const std::atomic<bool> kManualCompactionCanceledFalse2{false};
+  JobContext resume_job_context(2, false /* create_superversion */);
+  resume_job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber,
+                                         {});
+
+  CompactionJobStats resume_compaction_job_stats;
+  CompactionJob resume_compaction_job(
+      1, &resume_compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &resume_log_buffer, nullptr, nullptr,
+      nullptr, nullptr, &mutex_, &error_handler_, &resume_job_context,
+      table_cache_, &resume_event_logger, false, false, dbname_,
+      &resume_compaction_job_stats, Env::Priority::USER, nullptr,
+      /*manual_compaction_canceled=*/kManualCompactionCanceledFalse2,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  // PHASE 8: Run resumed compaction with progress from previous attempt
+  resume_compaction_job.Prepare(std::nullopt, resumable_compaction_progress);
+  mutex_.Unlock();
+
+  Status resume_status = resume_compaction_job.Run();
+  ASSERT_OK(resume_status);
+  ASSERT_OK(resume_compaction_job.io_status());
+
+  mutex_.Lock();
+  bool resume_compaction_released = false;
+  ASSERT_OK(resume_compaction_job.Install(&resume_compaction_released));
+  ASSERT_OK(resume_compaction_job.io_status());
+  mutex_.Unlock();
+
+  // PHASE 9: Verify resumed compaction completed successfully
+  ASSERT_GT(resume_compaction_job_stats.num_output_files, 0U);
+}
+
+// Test case 1: Resume compaction only supports single subcompaction
+TEST_F(CompactionJobTest, ResumableCompactionSingleSubcompactionOnly) {
+  NewDB();
+
+  // Setup input files
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key1", 5U, kTypeValue), "val1"},
+  });
+  AddMockFile(file1);
+
+  auto file2 = mock::MakeMockFile({
+      {KeyStr("key2", 4U, kTypeValue), "val2"},
+      {KeyStr("key3", 4U, kTypeValue), "val3"},
+  });
+  AddMockFile(file2);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+  ASSERT_EQ(2U, files.size());
+
+  // Create compaction with multiple subcompactions (max_subcompactions > 1)
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      2 /* max_subcompactions > 1 */, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  std::atomic<bool> manual_compaction_canceled = false;
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  // Create a mock resumable progress with multiple subcompactions
+  ResumableCompactionProgress multi_subcompaction_progress;
+  multi_subcompaction_progress.resize(2);  // Multiple subcompactions
+
+  // When attempting to prepare with multiple subcompaction progress,
+  // it should reject the resume and not use the progress
+  compaction_job.Prepare(std::nullopt, multi_subcompaction_progress);
+  mutex_.Unlock();
+
+  Status s = compaction_job.Run();
+  ASSERT_OK(s);  // Should run normally without using the invalid progress
+
+  mutex_.Lock();
+  bool compaction_released = false;
+  Status install_status = compaction_job.Install(&compaction_released);
+  ASSERT_OK(install_status);
+  mutex_.Unlock();
+}
+
+// Test case 2: Empty next_internal_key_to_compact in resumable progress
+TEST_F(CompactionJobTest, ResumableCompactionEmptyNextInternalKey) {
+  NewDB();
+
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key1", 5U, kTypeValue), "val1"},
+      {KeyStr("key2", 4U, kTypeValue), "val2"},
+  });
+  AddMockFile(file1);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  std::atomic<bool> manual_compaction_canceled = false;
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  // Create resumable progress with empty next_internal_key_to_compact
+  ResumableCompactionProgress empty_key_progress;
+  empty_key_progress.resize(1);
+  empty_key_progress[0].next_internal_key_to_compact = "";  // Empty key
+
+  compaction_job.Prepare(std::nullopt, empty_key_progress);
+  mutex_.Unlock();
+
+  // Should run normally as empty next_internal_key means no resume needed
+  Status s = compaction_job.Run();
+  ASSERT_OK(s);
+
+  mutex_.Lock();
+  bool compaction_released = false;
+  ASSERT_OK(compaction_job.Install(&compaction_released));
+  mutex_.Unlock();
+}
+
+// Test case 3: ReadOutputFilesTableProperties returning non-okay status
+TEST_F(CompactionJobTest, ResumableCompactionReadTablePropertiesFailure) {
+  NewDB();
+
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key1", 5U, kTypeValue), "val1"},
+      {KeyStr("key2", 4U, kTypeValue), "val2"},
+  });
+  AddMockFile(file1);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  std::atomic<bool> manual_compaction_canceled = false;
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  // Create resumable progress - this test focuses on handling
+  // ReadOutputFilesTableProperties failure gracefully
+  ResumableCompactionProgress invalid_progress;
+  invalid_progress.resize(1);
+  invalid_progress[0].next_internal_key_to_compact =
+      KeyStr("key1", 1U, kTypeValue);
+  invalid_progress[0].TemporaryOutputsFilesAllocation(false).push_back(
+      FileMetaData());
+
+  // Setup sync point to intercept the table properties reading failure
+  bool properties_read_failed = false;
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::ReadOutputFilesTableProperties::FailedToRead",
+      [&](void* arg) {
+        *(static_cast<bool*>(arg)) = true;
+        properties_read_failed = true;
+      });
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  compaction_job.Prepare(std::nullopt, invalid_progress);
+  mutex_.Unlock();
+
+  // Should ignore the invalid progress and run without resuming
+  Status s = compaction_job.Run();
+  ASSERT_OK(s);
+  ASSERT_TRUE(properties_read_failed);
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  mutex_.Lock();
+  bool compaction_released = false;
+  ASSERT_OK(compaction_job.Install(&compaction_released));
+  mutex_.Unlock();
+}
+
+TEST_F(CompactionJobTest, ResumableCompactionInputSeekFailure) {
+  NewDB();
+
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key1", 5U, kTypeValue), "val1"},
+      {KeyStr("key2", 4U, kTypeValue), "val2"},
+  });
+  AddMockFile(file1);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  std::atomic<bool> manual_compaction_canceled = false;
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  ResumableCompactionProgress invalid_progress;
+  invalid_progress.resize(1);
+  invalid_progress[0].next_internal_key_to_compact =
+      KeyStr("z_garbage_key", 1U, kTypeValue);
+  // A hack to have no table properties
+
+  compaction_job.Prepare(std::nullopt, invalid_progress);
+  mutex_.Unlock();
+
+  // Should ignore the invalid progress and run without resuming
+  Status s = compaction_job.Run();
+  ASSERT_TRUE(s.IsCorruption());
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  mutex_.Lock();
+  bool compaction_released = false;
+  ASSERT_TRUE(compaction_job.Install(&compaction_released).IsCorruption());
+  mutex_.Unlock();
+}
+
+// Test case 4.3: ShouldUpdateResumableSubcompactionProgress returns false
+// due to range deletion keys
+TEST_F(CompactionJobTest, ResumableCompactionRangeDeletionKeys) {
+  NewDB();
+
+  auto file0 = mock::MakeMockFile({
+      {KeyStr("key2", 1U, kTypeValue), "val1"},
+  });
+  AddMockFile(file0, 3 /* level */);
+
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key1", 5U, kTypeValue), "val1"},
+  });
+  AddMockFile(file1);
+  auto file2 = mock::MakeMockFile({
+      {KeyStr("key2", 4U, kTypeRangeDeletion), "val2"},
+      {KeyStr("key3", 2U, kTypeValue), "val3"},
+  });
+  AddMockFile(file2);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  // Test range deletion causes ShouldUpdateResumableSubcompactionProgress to
+  // return false
+  bool first_output_captured = false;
+  ResumableCompactionProgress resumable_compaction_progress;
+  std::atomic<bool> manual_compaction_canceled = false;
+
+  // Capture the resumable progress to verify it has no meaningful progress
+  // Stop compaction when encountering "key2" to trigger early termination
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::ShouldStopBefore::manual_decision", [](void* p) {
+        auto* pair = static_cast<std::pair<bool*, const Slice>*>(p);
+        if (pair->second.ToString().find("key2") != std::string::npos) {
+          *(pair->first) = true;
+        }
+      });
+
+  // Capture when first output file is fully created, then trigger shutdown
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::FinishCompactionOutputFile::FileMetaDataFullyPopulated",
+      [&](void* /*arg*/) {
+        if (!first_output_captured) {
+          first_output_captured = true;
+          manual_compaction_canceled.store(true);
+        }
+      });
+
+  // Capture compaction progress for later resume
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::FinalizeCompactionRun::WriteOutProgress", [&](void* arg) {
+        resumable_compaction_progress =
+            *(static_cast<ResumableCompactionProgress*>(arg));
+      });
+
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  compaction_job.Prepare(std::nullopt);
+  mutex_.Unlock();
+
+  Status s = compaction_job.Run();
+  ASSERT_TRUE(s.IsManualCompactionPaused());
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  // Verify that when range deletion is detected, no meaningful resumable
+  // progress is saved
+  ASSERT_TRUE(first_output_captured);
+  ASSERT_TRUE(resumable_compaction_progress.size() == 1);
+  ASSERT_TRUE(
+      resumable_compaction_progress[0].next_internal_key_to_compact.size() ==
+      0);
+  mutex_.Lock();
+  bool compaction_released = false;
+  ASSERT_TRUE(
+      compaction_job.Install(&compaction_released).IsManualCompactionPaused());
+  mutex_.Unlock();
+}
+
+// Test case 4.4: ShouldUpdateResumableSubcompactionProgress returns false
+// due to equal user keys without timestamp
+TEST_F(CompactionJobTest, ResumableCompactionEqualUserKeys) {
+  NewDB();
+
+  auto file1 = mock::MakeMockFile({
+      {KeyStr("key2", 5U, kTypeValue), "val1"},
+  });
+  AddMockFile(file1);
+
+  auto file2 = mock::MakeMockFile({
+      {KeyStr("key2", 4U, kTypeValue), "val2snapshot"},
+      {KeyStr("key3", 2U, kTypeValue), "val3"},
+  });
+  AddMockFile(file2);
+
+  SetLastSequence(5U);
+
+  auto cfd = versions_->GetColumnFamilySet()->GetDefault();
+  constexpr int input_level = 0;
+  constexpr int output_level = 1;
+  auto files = cfd->current()->storage_info()->LevelFiles(input_level);
+
+  std::vector<CompactionInputFiles> compaction_input_files;
+  CompactionInputFiles compaction_level;
+  compaction_level.level = input_level;
+  compaction_level.files.insert(compaction_level.files.end(), files.begin(),
+                                files.end());
+  compaction_input_files.push_back(compaction_level);
+
+  std::vector<FileMetaData*> grandparents;
+  Compaction compaction(
+      cfd->current()->storage_info(), cfd->ioptions(),
+      cfd->GetLatestMutableCFOptions(), mutable_db_options_,
+      compaction_input_files, output_level,
+      mutable_cf_options_.target_file_size_base,
+      mutable_cf_options_.max_compaction_bytes, 0, kNoCompression,
+      cfd->GetLatestMutableCFOptions().compression_opts, Temperature::kUnknown,
+      0, grandparents,
+      /*earliest_snapshot*/ std::nullopt, /*snapshot_checker*/ nullptr,
+      CompactionReason::kManualCompaction);
+  compaction.FinalizeInputInfo(cfd->current());
+
+  // Test range deletion causes ShouldUpdateResumableSubcompactionProgress to
+  // return false
+  bool first_output_captured = false;
+  ResumableCompactionProgress resumable_compaction_progress;
+  std::atomic<bool> manual_compaction_canceled = false;
+
+  // Capture the resumable progress to verify it has no meaningful progress
+  // Stop compaction when encountering "key2" to trigger early termination
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionOutputs::ShouldStopBefore::manual_decision", [](void* p) {
+        auto* pair = static_cast<std::pair<bool*, const Slice>*>(p);
+        if (pair->second.ToString().find("key2") != std::string::npos) {
+          *(pair->first) = true;
+        }
+      });
+
+  // Capture when first output file is fully created, then trigger shutdown
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::FinishCompactionOutputFile::FileMetaDataFullyPopulated",
+      [&](void* /*arg*/) {
+        if (!first_output_captured) {
+          first_output_captured = true;
+          manual_compaction_canceled.store(true);
+        }
+      });
+
+  // Capture compaction progress for later resume
+  SyncPoint::GetInstance()->SetCallBack(
+      "CompactionJob::FinalizeCompactionRun::WriteOutProgress", [&](void* arg) {
+        resumable_compaction_progress =
+            *(static_cast<ResumableCompactionProgress*>(arg));
+      });
+
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
+  mutex_.Lock();
+  EventLogger event_logger(db_options_.info_log.get());
+
+  JobContext job_context(1, false /* create_superversion */);
+  job_context.InitSnapshotContext(nullptr, nullptr, kMaxSequenceNumber, {4});
+
+  CompactionJobStats compaction_job_stats;
+  CompactionJob compaction_job(
+      0, &compaction, db_options_, mutable_db_options_, env_options_,
+      versions_.get(), &shutting_down_, &log_buffer, nullptr, nullptr, nullptr,
+      nullptr, &mutex_, &error_handler_, &job_context, table_cache_,
+      &event_logger, false, false, dbname_, &compaction_job_stats,
+      Env::Priority::USER, nullptr /* IOTracer */,
+      /*manual_compaction_canceled=*/manual_compaction_canceled,
+      env_->GenerateUniqueId(), DBImpl::GenerateDbSessionId(nullptr), "");
+
+  compaction_job.Prepare(std::nullopt);
+  mutex_.Unlock();
+
+  Status s = compaction_job.Run();
+  ASSERT_TRUE(s.IsManualCompactionPaused());
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  // Verify that when range deletion is detected, no meaningful resumable
+  // progress is saved
+  ASSERT_TRUE(first_output_captured);
+  ASSERT_TRUE(resumable_compaction_progress.size() == 1);
+  ASSERT_TRUE(
+      resumable_compaction_progress[0].next_internal_key_to_compact.size() ==
+      0);
+  mutex_.Lock();
+  bool compaction_released = false;
+  ASSERT_TRUE(
+      compaction_job.Install(&compaction_released).IsManualCompactionPaused());
+  mutex_.Unlock();
+}
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
