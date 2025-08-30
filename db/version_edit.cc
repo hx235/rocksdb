@@ -1407,4 +1407,137 @@ std::string VersionEdit::DebugJSON(int edit_num, bool hex_key) const {
   return jw.Get();
 }
 
+// ResumableCompactionProgressBuilder implementation
+
+bool ResumableCompactionProgressBuilder::ProcessVersionEdit(
+    const VersionEdit& edit) {
+  if (!edit.HasResumableCompactionProgress()) {
+    return false;
+  }
+
+  const ResumableCompactionProgress& progress =
+      edit.GetResumableCompactionProgress();
+
+  // Currently we only support single subcompaction resumable progress
+  if (progress.size() != 1) {
+    return false;
+  }
+
+  // Initialize accumulated progress if this is the first VersionEdit
+  if (accumulated_resumable_compaction_progress_.empty()) {
+    accumulated_resumable_compaction_progress_.resize(1);
+  }
+
+  // Merge the delta progress into our accumulated state
+  // LIMITATION: assume only one compaction/subcompaction
+  MergeDeltaProgress(progress[0],
+                     &accumulated_resumable_compaction_progress_[0]);
+
+  return true;
+}
+
+void ResumableCompactionProgressBuilder::MergeDeltaProgress(
+    const ResumableSubcompactionProgress&
+        delta_resumable_subcompaction_progress,
+    ResumableSubcompactionProgress*
+        accumulated_resumable_subcompaction_progress) {
+  // Update resume key (always use the latest one)
+  accumulated_resumable_subcompaction_progress->next_internal_key_to_compact =
+      delta_resumable_subcompaction_progress.next_internal_key_to_compact;
+
+  // Update counters (always use the latest values)
+  accumulated_resumable_subcompaction_progress->num_processed_input_records =
+      delta_resumable_subcompaction_progress.num_processed_input_records;
+  accumulated_resumable_subcompaction_progress->NumProcessedOutputRecords(
+      false) =
+      delta_resumable_subcompaction_progress.NumProcessedOutputRecords(false);
+  accumulated_resumable_subcompaction_progress->NumProcessedOutputRecords(
+      true) =
+      delta_resumable_subcompaction_progress.NumProcessedOutputRecords(true);
+
+  // Accumulate output files directly into the progress object's storage
+
+  // Regular output files (is_proximal_level = false)
+  size_t current_output_files_start =
+      accumulated_resumable_subcompaction_progress
+          ->TemporaryOutputsFilesAllocation(false)
+          .size();
+  // Reserve space to avoid reallocations during push_back operations
+  accumulated_resumable_subcompaction_progress
+      ->TemporaryOutputsFilesAllocation(false)
+      .reserve(current_output_files_start +
+               delta_resumable_subcompaction_progress
+                   .TemporaryOutputsFilesAllocation(false)
+                   .size());
+
+  // Reserve space for output_files vector to avoid reallocations
+  accumulated_resumable_subcompaction_progress->OutputFiles(false).reserve(
+      accumulated_resumable_subcompaction_progress->OutputFiles(false).size() +
+      delta_resumable_subcompaction_progress
+          .TemporaryOutputsFilesAllocation(false)
+          .size());
+
+  for (const auto& file_allocation :
+       delta_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(
+           false)) {
+    accumulated_resumable_subcompaction_progress
+        ->TemporaryOutputsFilesAllocation(false)
+        .push_back(file_allocation);
+  }
+
+  // Update pointers to point to the allocation storage
+  for (size_t i = current_output_files_start;
+       i < accumulated_resumable_subcompaction_progress
+               ->TemporaryOutputsFilesAllocation(false)
+               .size();
+       ++i) {
+    accumulated_resumable_subcompaction_progress->OutputFiles(false).push_back(
+        &accumulated_resumable_subcompaction_progress
+             ->TemporaryOutputsFilesAllocation(false)[i]);
+  }
+
+  // Proximal level output files (is_proximal_level = true)
+  size_t current_proximal_files_start =
+      accumulated_resumable_subcompaction_progress
+          ->TemporaryOutputsFilesAllocation(true)
+          .size();
+  // Reserve space to avoid reallocations during push_back operations
+  accumulated_resumable_subcompaction_progress
+      ->TemporaryOutputsFilesAllocation(true)
+      .reserve(current_proximal_files_start +
+               delta_resumable_subcompaction_progress
+                   .TemporaryOutputsFilesAllocation(true)
+                   .size());
+
+  // Reserve space for proximal_level_output_files vector to avoid reallocations
+  accumulated_resumable_subcompaction_progress->OutputFiles(true).reserve(
+      accumulated_resumable_subcompaction_progress->OutputFiles(true).size() +
+      delta_resumable_subcompaction_progress
+          .TemporaryOutputsFilesAllocation(true)
+          .size());
+
+  for (const auto& file_allocation :
+       delta_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(
+           true)) {
+    accumulated_resumable_subcompaction_progress
+        ->TemporaryOutputsFilesAllocation(true)
+        .push_back(file_allocation);
+  }
+
+  // Update pointers to point to the allocation storage
+  for (size_t i = current_proximal_files_start;
+       i < accumulated_resumable_subcompaction_progress
+               ->TemporaryOutputsFilesAllocation(true)
+               .size();
+       ++i) {
+    accumulated_resumable_subcompaction_progress->OutputFiles(true).push_back(
+        &accumulated_resumable_subcompaction_progress
+             ->TemporaryOutputsFilesAllocation(true)[i]);
+  }
+}
+
+void ResumableCompactionProgressBuilder::Clear() {
+  accumulated_resumable_compaction_progress_.clear();
+}
+
 }  // namespace ROCKSDB_NAMESPACE

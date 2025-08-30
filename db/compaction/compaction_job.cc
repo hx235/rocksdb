@@ -955,51 +955,6 @@ void CompactionJob::FinalizeCompactionRun(
   compact_->status = input_status;
   TEST_SYNC_POINT_CALLBACK("CompactionJob::Run():EndStatusSet",
                            const_cast<Status*>(&input_status));
-  MaybePersistResumableCompactionProgress();
-}
-
-void CompactionJob::MaybePersistResumableCompactionProgress() {
-  // LIMITATION: only one folder so one subcompaction
-  if (compact_->sub_compact_states.size() != 1) {
-    ROCKS_LOG_INFO(
-        db_options_.info_log,
-        "[%s] [JOB %d] Skipping resumable compaction progress persistence: "
-        "multiple subcompactions (%zu) not supported",
-        compact_->compaction->column_family_data()->GetName().c_str(), job_id_,
-        compact_->sub_compact_states.size());
-    return;
-  }
-
-  // LIMITATION: only persist on signal
-  if (!compact_->status.IsShutdownInProgress() &&
-      !compact_->status.IsManualCompactionPaused()) {
-    ROCKS_LOG_INFO(
-        db_options_.info_log,
-        "[%s] [JOB %d] Skipping resumable compaction progress persistence: "
-        "compaction completed normally (status: %s)",
-        compact_->compaction->column_family_data()->GetName().c_str(), job_id_,
-        compact_->status.ToString().c_str());
-    return;
-  }
-
-  ResumableSubcompactionProgress resumable_subcompaction_progress =
-      compact_->sub_compact_states[0].GetResumableSubcompactionProgressRef();
-
-  ROCKS_LOG_INFO(db_options_.info_log,
-                 "[%s] [JOB %d] Persisting resumable compaction progress: %s",
-                 compact_->compaction->column_family_data()->GetName().c_str(),
-                 job_id_, resumable_subcompaction_progress.ToString().c_str());
-
-  ResumableCompactionProgress resumable_compaction_progress;
-  resumable_compaction_progress.push_back(resumable_subcompaction_progress);
-  TEST_SYNC_POINT_CALLBACK(
-      "CompactionJob::FinalizeCompactionRun::WriteOutProgress",
-      &resumable_compaction_progress);
-
-  ROCKS_LOG_INFO(
-      db_options_.info_log,
-      "[%s] [JOB %d] Successfully persisted resumable compaction progress",
-      compact_->compaction->column_family_data()->GetName().c_str(), job_id_);
 }
 
 Status CompactionJob::Run() {
@@ -2070,6 +2025,7 @@ Status CompactionJob::FinishCompactionOutputFile(
           sub_compact, prev_table_last_internal_key, next_table_min_key)) {
     UpdateResumableSubcompactionProgress(c_iter, next_table_min_key,
                                          sub_compact);
+    s = PersistResumableSubcompactionProgress(sub_compact);
   }
   outputs.ResetBuilder();
   return s;
@@ -2993,6 +2949,40 @@ void CompactionJob::UpdateResumableSubcompactionProgress(
   }
 }
 
+Status CompactionJob::PersistResumableSubcompactionProgress(
+    SubcompactionState* sub_compact) {
+  ResumableSubcompactionProgress& resumable_subcompaction_progress =
+      sub_compact->GetResumableSubcompactionProgressRef();
+
+  ROCKS_LOG_INFO(db_options_.info_log,
+                 "[%s] [JOB %d] Persisting resumable compaction progress: %s",
+                 compact_->compaction->column_family_data()->GetName().c_str(),
+                 job_id_, resumable_subcompaction_progress.ToString().c_str());
+
+  ResumableCompactionProgress resumable_compaction_progress;
+  resumable_compaction_progress.push_back(resumable_subcompaction_progress);
+
+  if (resumable_subcompaction_progress.OutputFiles(false).size() ==
+          resumable_subcompaction_progress.LastPersistedOutputFilesCount(
+              false) &&
+      resumable_subcompaction_progress.OutputFiles(true).size() ==
+          resumable_subcompaction_progress.LastPersistedOutputFilesCount(
+              true)) {
+    return Status::OK();
+  }
+
+  // Update delta tracking counters for next persistence
+  resumable_subcompaction_progress.LastPersistedOutputFilesCount(false) =
+      resumable_subcompaction_progress.OutputFiles(false).size();
+  resumable_subcompaction_progress.LastPersistedOutputFilesCount(true) =
+      resumable_subcompaction_progress.OutputFiles(true).size();
+
+  TEST_SYNC_POINT_CALLBACK(
+      "CompactionJob::Subcompaction::PersistResumableSubcompactionProgress",
+      &resumable_compaction_progress);
+  return Status::OK();
+}
+
 Status CompactionJob::VerifyInputRecordCount(
     uint64_t num_input_range_del) const {
   size_t ts_sz = compact_->compaction->column_family_data()
@@ -3083,18 +3073,20 @@ void ResumableSubcompactionProgress::EncodeTo(std::string* dst) const {
     PutLengthPrefixedSlice(dst, varint_records);
   }
 
-  // Field: output_files (last level files)
+  // Field: output_files_delta (last level files - only new files since last
+  // persistence)
   if (!output_files.empty()) {
-    PutVarint32(dst, ResumableSubcompactionCustomTag::kOutputFiles);
+    PutVarint32(dst, ResumableSubcompactionCustomTag::kOutputFilesDelta);
     std::string files_data;
     EncodeOutputFiles(&files_data, output_files);
     PutLengthPrefixedSlice(dst, files_data);
   }
 
-  // Field: proximal_level_output_files
+  // Field: proximal_level_output_files_delta (only new files since last
+  // persistence)
   if (!proximal_level_output_files.empty()) {
-    PutVarint32(dst,
-                ResumableSubcompactionCustomTag::kProximalLevelOutputFiles);
+    PutVarint32(
+        dst, ResumableSubcompactionCustomTag::kProximalLevelOutputFilesDelta);
     std::string files_data;
     EncodeOutputFiles(&files_data, proximal_level_output_files);
     PutLengthPrefixedSlice(dst, files_data);
@@ -3156,13 +3148,13 @@ Status ResumableSubcompactionProgress::DecodeFrom(Slice* input) {
         }
         break;
 
-      case ResumableSubcompactionCustomTag::kOutputFiles: {
+      case ResumableSubcompactionCustomTag::kOutputFilesDelta: {
         Status s = DecodeOutputFiles(&field, temporary_output_files_allocation);
         if (!s.ok()) return s;
         break;
       }
 
-      case ResumableSubcompactionCustomTag::kProximalLevelOutputFiles: {
+      case ResumableSubcompactionCustomTag::kProximalLevelOutputFilesDelta: {
         Status s = DecodeOutputFiles(
             &field, temporary_proximal_level_output_files_allocation);
         if (!s.ok()) return s;
@@ -3227,8 +3219,20 @@ Status ResumableSubcompactionProgress::DecodeFrom(Slice* input) {
 
 void ResumableSubcompactionProgress::EncodeOutputFiles(
     std::string* dst, const std::vector<const FileMetaData*>& files) const {
-  PutVarint32(dst, static_cast<uint32_t>(files.size()));
-  for (const FileMetaData* file_ptr : files) {
+  // Delta encoding - only encode new files since last persistence
+  size_t last_persisted_count =
+      &files == &output_files
+          ? last_persisted_output_files_count
+          : last_persisted_proximal_level_output_files_count;
+
+  // Only encode files beyond what we've already persisted
+  size_t new_files_count = files.size() > last_persisted_count
+                               ? files.size() - last_persisted_count
+                               : 0;
+
+  PutVarint32(dst, static_cast<uint32_t>(new_files_count));
+  for (size_t i = last_persisted_count; i < files.size(); ++i) {
+    const FileMetaData* file_ptr = files[i];
     assert(file_ptr != nullptr);
     std::string file_data;
     // Reuse existing FileMetaData encoding infrastructure
@@ -3239,13 +3243,16 @@ void ResumableSubcompactionProgress::EncodeOutputFiles(
 
 Status ResumableSubcompactionProgress::DecodeOutputFiles(
     Slice* input, std::vector<FileMetaData>& files_allocation) {
-  uint32_t file_count = 0;
-  if (!GetVarint32(input, &file_count)) {
+  uint32_t new_file_count = 0;
+  if (!GetVarint32(input, &new_file_count)) {
     return Status::Corruption("ResumableSubcompactionProgress", "file count");
   }
 
-  files_allocation.reserve(file_count);
-  for (uint32_t i = 0; i < file_count; ++i) {
+  // For delta decoding, append the new files to existing files_allocation
+  size_t previous_size = files_allocation.size();
+  files_allocation.reserve(previous_size + new_file_count);
+
+  for (uint32_t i = 0; i < new_file_count; ++i) {
     Slice file_data;
     if (!GetLengthPrefixedSlice(input, &file_data)) {
       return Status::Corruption("ResumableSubcompactionProgress", "file data");

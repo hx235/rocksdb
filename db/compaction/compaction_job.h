@@ -304,7 +304,6 @@ class CompactionJob {
   void FinalizeCompactionRun(const Status& status,
                              bool stats_built_from_input_table_prop,
                              uint64_t num_input_range_del);
-  void MaybePersistResumableCompactionProgress();
 
   CompactionServiceJobStatus ProcessKeyValueCompactionWithCompactionService(
       SubcompactionState* sub_compact);
@@ -544,6 +543,7 @@ class CompactionJob {
   void UpdateResumableSubcompactionProgress(const CompactionIterator* c_iter,
                                             const Slice next_table_min_key,
                                             SubcompactionState* sub_compact);
+  Status PersistResumableSubcompactionProgress(SubcompactionState* sub_compact);
 };
 
 // CompactionServiceInput is used the pass compaction information between two

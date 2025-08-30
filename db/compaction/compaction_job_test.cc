@@ -2487,7 +2487,8 @@ TEST_F(CompactionJobTest, AbortCompactionAfterFirstOutputFile) {
   SyncPoint::GetInstance()->SetCallBack(
       "CompactionOutputs::ShouldStopBefore::manual_decision", [](void* p) {
         auto* pair = static_cast<std::pair<bool*, const Slice>*>(p);
-        if (pair->second.ToString().find("key2") != std::string::npos) {
+        if (pair->second.ToString().find("key2") != std::string::npos ||
+            pair->second.ToString().find("key3") != std::string::npos) {
           *(pair->first) = true;
         }
       });
@@ -2505,7 +2506,8 @@ TEST_F(CompactionJobTest, AbortCompactionAfterFirstOutputFile) {
 
   // Capture compaction progress for later resume
   SyncPoint::GetInstance()->SetCallBack(
-      "CompactionJob::FinalizeCompactionRun::WriteOutProgress", [&](void* arg) {
+      "CompactionJob::Subcompaction::PersistResumableSubcompactionProgress",
+      [&](void* arg) {
         resumable_compaction_progress =
             *(static_cast<ResumableCompactionProgress*>(arg));
       });
@@ -3013,7 +3015,8 @@ TEST_F(CompactionJobTest, ResumableCompactionRangeDeletionKeys) {
 
   // Capture compaction progress for later resume
   SyncPoint::GetInstance()->SetCallBack(
-      "CompactionJob::FinalizeCompactionRun::WriteOutProgress", [&](void* arg) {
+      "CompactionJob::Subcompaction::PersistResumableSubcompactionProgress",
+      [&](void* arg) {
         resumable_compaction_progress =
             *(static_cast<ResumableCompactionProgress*>(arg));
       });
@@ -3049,10 +3052,7 @@ TEST_F(CompactionJobTest, ResumableCompactionRangeDeletionKeys) {
   // Verify that when range deletion is detected, no meaningful resumable
   // progress is saved
   ASSERT_TRUE(first_output_captured);
-  ASSERT_TRUE(resumable_compaction_progress.size() == 1);
-  ASSERT_TRUE(
-      resumable_compaction_progress[0].next_internal_key_to_compact.size() ==
-      0);
+  ASSERT_TRUE(resumable_compaction_progress.size() == 0);
   mutex_.Lock();
   bool compaction_released = false;
   ASSERT_TRUE(
@@ -3131,7 +3131,8 @@ TEST_F(CompactionJobTest, ResumableCompactionEqualUserKeys) {
 
   // Capture compaction progress for later resume
   SyncPoint::GetInstance()->SetCallBack(
-      "CompactionJob::FinalizeCompactionRun::WriteOutProgress", [&](void* arg) {
+      "CompactionJob::Subcompaction::PersistResumableSubcompactionProgress",
+      [&](void* arg) {
         resumable_compaction_progress =
             *(static_cast<ResumableCompactionProgress*>(arg));
       });
@@ -3167,10 +3168,7 @@ TEST_F(CompactionJobTest, ResumableCompactionEqualUserKeys) {
   // Verify that when range deletion is detected, no meaningful resumable
   // progress is saved
   ASSERT_TRUE(first_output_captured);
-  ASSERT_TRUE(resumable_compaction_progress.size() == 1);
-  ASSERT_TRUE(
-      resumable_compaction_progress[0].next_internal_key_to_compact.size() ==
-      0);
+  ASSERT_TRUE(resumable_compaction_progress.size() == 0);
   mutex_.Lock();
   bool compaction_released = false;
   ASSERT_TRUE(
