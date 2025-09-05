@@ -794,6 +794,283 @@ TEST(FileMetaDataTest, UpdateBoundariesBlobIndex) {
   }
 }
 
+TEST_F(VersionEditTest, ResumableSubcompactionProgress) {
+  // Helper to create test FileMetaData with clear naming
+  auto CreateTestFile = [](uint64_t file_number, const std::string& prefix) {
+    FileMetaData file;
+    file.fd = FileDescriptor(file_number, 0, 1024, 50, 150);
+    file.smallest = InternalKey(prefix + "a", 50, kTypeValue);
+    file.largest = InternalKey(prefix + "z", 150, kTypeValue);
+    file.oldest_ancester_time = 12345;
+    file.file_creation_time = 67890;
+    file.epoch_number = 10;
+    file.file_checksum = "checksum_" + std::to_string(file_number);
+    file.file_checksum_func_name = "crc32c";
+    file.marked_for_compaction = false;
+    file.temperature = Temperature::kUnknown;
+    return file;
+  };
+
+  // === TEST 1: Encode and decode initial progress object ===
+
+  // Create initial progress with 2 files
+  ResumableSubcompactionProgress initial_resumable_subcompaction_progress;
+  initial_resumable_subcompaction_progress.next_internal_key_to_compact =
+      "key_100";
+  initial_resumable_subcompaction_progress.num_processed_input_records = 500;
+  initial_resumable_subcompaction_progress.NumProcessedOutputRecords(false) =
+      400;
+  initial_resumable_subcompaction_progress.NumProcessedOutputRecords(true) =
+      100;
+
+  FileMetaData initial_output_file = CreateTestFile(1, "initial_output_");
+  FileMetaData initial_proximal_level_output_file =
+      CreateTestFile(2, "initial_proximal_");
+
+  initial_resumable_subcompaction_progress
+      .TemporaryOutputsFilesAllocation(false)
+      .push_back(initial_output_file);
+  initial_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(true)
+      .push_back(initial_proximal_level_output_file);
+
+  initial_resumable_subcompaction_progress.OutputFiles(false).push_back(
+      &initial_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(
+          false)[0]);
+  initial_resumable_subcompaction_progress.OutputFiles(true).push_back(
+      &initial_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(
+          true)[0]);
+
+  // Encode initial progress (should encode all files since delta counters are
+  // 0)
+  VersionEdit initial_version_edit;
+  initial_version_edit.SetResumableSubcompactionProgress(
+      initial_resumable_subcompaction_progress);
+  std::string initial_encoded;
+  ASSERT_TRUE(initial_version_edit.EncodeTo(&initial_encoded, 0));
+
+  // Decode initial progress and verify
+  VersionEdit initial_decoded_version_edit;
+  ASSERT_OK(initial_decoded_version_edit.DecodeFrom(initial_encoded));
+  ASSERT_TRUE(initial_decoded_version_edit.HasResumableSubcompactionProgress());
+
+  const ResumableSubcompactionProgress&
+      decoded_initial_resumable_subcompaction_progress =
+          initial_decoded_version_edit.GetResumableSubcompactionProgress();
+
+  // Verify decoded initial progress matches original
+  ASSERT_EQ(
+      decoded_initial_resumable_subcompaction_progress
+          .next_internal_key_to_compact,
+      initial_resumable_subcompaction_progress.next_internal_key_to_compact);
+  ASSERT_EQ(
+      decoded_initial_resumable_subcompaction_progress
+          .num_processed_input_records,
+      initial_resumable_subcompaction_progress.num_processed_input_records);
+  ASSERT_EQ(decoded_initial_resumable_subcompaction_progress
+                .NumProcessedOutputRecords(false),
+            initial_resumable_subcompaction_progress.NumProcessedOutputRecords(
+                false));
+  ASSERT_EQ(
+      decoded_initial_resumable_subcompaction_progress
+          .NumProcessedOutputRecords(true),
+      initial_resumable_subcompaction_progress.NumProcessedOutputRecords(true));
+  ASSERT_EQ(decoded_initial_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(false)
+                .size(),
+            1);
+  ASSERT_EQ(decoded_initial_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(true)
+                .size(),
+            1);
+  ASSERT_EQ(decoded_initial_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(false)[0]
+                .fd.GetNumber(),
+            initial_output_file.fd.GetNumber());
+  ASSERT_EQ(decoded_initial_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(true)[0]
+                .fd.GetNumber(),
+            initial_proximal_level_output_file.fd.GetNumber());
+
+  // === TEST 2: Encode and decode progress with more files (delta test) ===
+
+  // Create updated progress with additional files
+  ResumableSubcompactionProgress updated_resumable_subcompaction_progress =
+      initial_resumable_subcompaction_progress;
+
+  // Simulate that initial files have been persisted (update delta tracking)
+  updated_resumable_subcompaction_progress.LastPersistedOutputFilesCount(
+      false) =
+      initial_resumable_subcompaction_progress.OutputFiles(false).size();
+  updated_resumable_subcompaction_progress.LastPersistedOutputFilesCount(true) =
+      initial_resumable_subcompaction_progress.OutputFiles(true).size();
+
+  // Add new files to simulate continued progress
+  FileMetaData new_output_file = CreateTestFile(3, "new_output_");
+  FileMetaData new_proximal_level_output_file =
+      CreateTestFile(4, "new_proximal_");
+
+  updated_resumable_subcompaction_progress
+      .TemporaryOutputsFilesAllocation(false)
+      .push_back(new_output_file);
+  updated_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(true)
+      .push_back(new_proximal_level_output_file);
+
+  updated_resumable_subcompaction_progress.OutputFiles(false).push_back(
+      &updated_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(
+          false)[1]);
+  updated_resumable_subcompaction_progress.OutputFiles(true).push_back(
+      &updated_resumable_subcompaction_progress.TemporaryOutputsFilesAllocation(
+          true)[1]);
+
+  // Update progress counters
+  updated_resumable_subcompaction_progress.next_internal_key_to_compact =
+      "key_300";
+  updated_resumable_subcompaction_progress.num_processed_input_records =
+      1000;  // Increased
+  updated_resumable_subcompaction_progress.NumProcessedOutputRecords(false) =
+      800;  // Increased
+  updated_resumable_subcompaction_progress.NumProcessedOutputRecords(true) =
+      200;  // Increased
+
+  // Encode updated progress (should only encode NEW files due to delta
+  // tracking)
+  ResumableCompactionProgress updated_resumable_compaction_progress;
+  updated_resumable_compaction_progress.push_back(
+      updated_resumable_subcompaction_progress);
+
+  VersionEdit delta_version_edit;
+  delta_version_edit.SetResumableSubcompactionProgress(
+      updated_resumable_subcompaction_progress);
+  std::string delta_encoded;
+  ASSERT_TRUE(delta_version_edit.EncodeTo(&delta_encoded, 0));
+
+  // Test full round-trip decode of delta-encoded progress
+  VersionEdit decoded_delta_version_edit;
+  ASSERT_OK(decoded_delta_version_edit.DecodeFrom(delta_encoded));
+  ASSERT_TRUE(decoded_delta_version_edit.HasResumableSubcompactionProgress());
+
+  const ResumableSubcompactionProgress&
+      decoded_updated_resumable_subcompaction_progress =
+          decoded_delta_version_edit.GetResumableSubcompactionProgress();
+
+  ASSERT_EQ(
+      decoded_updated_resumable_subcompaction_progress
+          .next_internal_key_to_compact,
+      updated_resumable_subcompaction_progress.next_internal_key_to_compact);
+  ASSERT_EQ(
+      decoded_updated_resumable_subcompaction_progress
+          .num_processed_input_records,
+      updated_resumable_subcompaction_progress.num_processed_input_records);
+  ASSERT_EQ(decoded_updated_resumable_subcompaction_progress
+                .NumProcessedOutputRecords(false),
+            updated_resumable_subcompaction_progress.NumProcessedOutputRecords(
+                false));
+  ASSERT_EQ(
+      decoded_updated_resumable_subcompaction_progress
+          .NumProcessedOutputRecords(true),
+      updated_resumable_subcompaction_progress.NumProcessedOutputRecords(true));
+
+  // Verify that delta decoding only contains the NEW files (not accumulated
+  // files)
+  ASSERT_EQ(decoded_updated_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(false)
+                .size(),
+            1);  // Only the new file from delta
+  ASSERT_EQ(decoded_updated_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(true)
+                .size(),
+            1);  // Only the new proximal file from delta
+  ASSERT_EQ(decoded_updated_resumable_subcompaction_progress
+                .TemporaryOutputsFilesAllocation(false)[0]
+                .fd.GetNumber(),
+            new_output_file.fd.GetNumber());  // Access index 0, not 1
+  ASSERT_EQ(
+      decoded_updated_resumable_subcompaction_progress
+          .TemporaryOutputsFilesAllocation(true)[0]
+          .fd.GetNumber(),
+      new_proximal_level_output_file.fd.GetNumber());  // Access index 0, not 1
+
+  // === TEST 3: ResumableSubcmpactionProgressBuilder accumulation test ===
+
+  // Test that ResumableSubcmpactionProgressBuilder can properly accumulate
+  // progress from multiple VersionEdits to reconstruct the complete state
+  ResumableSubcompactionProgressBuilder builder;
+
+  // Process the initial decoded VersionEdit
+  ASSERT_TRUE(builder.ProcessVersionEdit(initial_decoded_version_edit));
+  ASSERT_TRUE(builder.HasAccumulatedResumableSubcompactionProgress());
+
+  // Process the delta decoded VersionEdit
+  ASSERT_TRUE(builder.ProcessVersionEdit(decoded_delta_version_edit));
+
+  // Get accumulated progress and verify against expected complete state
+  const ResumableSubcompactionProgress& accumulated_progress =
+      builder.GetAccumulatedResumableSubcompactionProgress();
+
+  // Since accumulated_progress is now a single struct (not a vector), work
+  // directly with it
+  const ResumableSubcompactionProgress& accumulated_subcompaction =
+      accumulated_progress;
+
+  // Verify accumulated progress matches the updated complete state
+  ASSERT_EQ(
+      accumulated_subcompaction.next_internal_key_to_compact,
+      updated_resumable_subcompaction_progress.next_internal_key_to_compact);
+  ASSERT_EQ(
+      accumulated_subcompaction.num_processed_input_records,
+      updated_resumable_subcompaction_progress.num_processed_input_records);
+  ASSERT_EQ(accumulated_subcompaction.NumProcessedOutputRecords(false),
+            updated_resumable_subcompaction_progress.NumProcessedOutputRecords(
+                false));
+  ASSERT_EQ(
+      accumulated_subcompaction.NumProcessedOutputRecords(true),
+      updated_resumable_subcompaction_progress.NumProcessedOutputRecords(true));
+
+  // With delta encoding working properly:
+  // Initial decoded VersionEdit: 1 output file (file #1), 1 proximal file (file
+  // #2) Delta decoded VersionEdit: 1 output file (file #3), 1 proximal file
+  // (file #4) [only NEW files] Builder accumulates: 1 + 1 = 2 output files, 1 +
+  // 1 = 2 proximal files
+  // Verify that builder accumulated ALL files (initial + delta)
+  ASSERT_EQ(
+      accumulated_subcompaction.TemporaryOutputsFilesAllocation(false).size(),
+      updated_resumable_subcompaction_progress
+          .TemporaryOutputsFilesAllocation(false)
+          .size());
+  ASSERT_EQ(
+      accumulated_subcompaction.TemporaryOutputsFilesAllocation(true).size(),
+      updated_resumable_subcompaction_progress
+          .TemporaryOutputsFilesAllocation(true)
+          .size());
+  ASSERT_EQ(accumulated_subcompaction.OutputFiles(false).size(),
+            updated_resumable_subcompaction_progress.OutputFiles(false).size());
+  ASSERT_EQ(accumulated_subcompaction.OutputFiles(true).size(),
+            updated_resumable_subcompaction_progress.OutputFiles(true).size());
+
+  // Verify file numbers are correct: files 1,3 for output and files 2,4 for
+  // proximal
+  std::set<uint64_t> accumulated_output_file_numbers;
+  for (const auto* file : accumulated_subcompaction.OutputFiles(false)) {
+    accumulated_output_file_numbers.insert(file->fd.GetNumber());
+  }
+  std::set<uint64_t> expected_output_file_numbers = {1,
+                                                     3};  // Unique file numbers
+  ASSERT_EQ(accumulated_output_file_numbers, expected_output_file_numbers);
+
+  std::set<uint64_t> accumulated_proximal_level_output_file_numbers;
+  for (const auto* file : accumulated_subcompaction.OutputFiles(true)) {
+    accumulated_proximal_level_output_file_numbers.insert(file->fd.GetNumber());
+  }
+  std::set<uint64_t> expected_proximal_level_output_file_numbers = {
+      2, 4};  // Unique file numbers
+  ASSERT_EQ(accumulated_proximal_level_output_file_numbers,
+            expected_proximal_level_output_file_numbers);
+
+  // Test builder Clear functionality
+  builder.Clear();
+  ASSERT_FALSE(builder.HasAccumulatedResumableSubcompactionProgress());
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

@@ -2751,6 +2751,13 @@ struct CompactionServiceOptionsOverride {
 struct OpenAndCompactOptions {
   // Allows cancellation of an in-progress compaction.
   std::atomic<bool>* canceled = nullptr;
+
+  // Enable resumable compaction progress tracking and resumption.
+  // When enabled, compaction progress is periodically saved to disk,
+  // allowing the compaction to resume from the last saved state if
+  // interrupted or restarted.
+  // Default: true
+  bool enable_resumable_compaction = false;
 };
 
 struct LiveFilesStorageInfoOptions {

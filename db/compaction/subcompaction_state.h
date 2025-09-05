@@ -16,6 +16,7 @@
 #include "db/blob/blob_garbage_meter.h"
 #include "db/compaction/compaction.h"
 #include "db/compaction/compaction_iterator.h"
+#include "db/compaction/compaction_job.h"
 #include "db/compaction/compaction_outputs.h"
 #include "db/internal_stats.h"
 #include "db/output_validator.h"
@@ -200,10 +201,20 @@ class SubcompactionState {
     return range_del_agg_ && !range_del_agg_->IsEmpty();
   }
 
+  void SetResumableSubcompactionProgress(
+      const ResumableSubcompactionProgress& resumable_subcompaction_progress) {
+    resumable_subcompaction_progress_ = resumable_subcompaction_progress;
+  }
+
+  ResumableSubcompactionProgress& GetResumableSubcompactionProgressRef() {
+    return resumable_subcompaction_progress_;
+  }
+
   // Add compaction_iterator key/value to the `Current` output group.
   Status AddToOutput(const CompactionIterator& iter, bool use_proximal_output,
                      const CompactionFileOpenFunc& open_file_func,
-                     const CompactionFileCloseFunc& close_file_func);
+                     const CompactionFileCloseFunc& close_file_func,
+                     const ParsedInternalKey& prev_table_last_internal_key);
 
   // Close all compaction output files, both output_to_proximal_level outputs
   // and normal outputs.
@@ -233,6 +244,8 @@ class SubcompactionState {
   CompactionOutputs proximal_level_outputs_;
   CompactionOutputs* current_outputs_ = &compaction_outputs_;
   std::unique_ptr<CompactionRangeDelAggregator> range_del_agg_;
+
+  ResumableSubcompactionProgress resumable_subcompaction_progress_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

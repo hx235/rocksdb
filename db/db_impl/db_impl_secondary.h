@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "db/compaction/compaction_job.h"
 #include "db/db_impl/db_impl.h"
 #include "logging/logging.h"
 
@@ -255,6 +256,13 @@ class DBImplSecondary : public DBImpl {
                                          CompactionServiceResult* result) {
     return CompactWithoutInstallation(options, cfh, input, result);
   }
+
+  Status TEST_FinalizeResumableCompactionProgressWriter(
+      bool enable_resumable_compaction,
+      std::unique_ptr<log::Writer>* resumable_compaction_progress_writer) {
+    return FinalizeResumableCompactionProgressWriter(
+        enable_resumable_compaction, resumable_compaction_progress_writer);
+  }
 #endif  // NDEBUG
 
  protected:
@@ -303,6 +311,111 @@ class DBImplSecondary : public DBImpl {
                                     const CompactionServiceInput& input,
                                     CompactionServiceResult* result);
 
+ private:
+  // Prepares the output directory for compaction:
+  // 1. Ensures the output directory exists
+  // 2. Checks for existing resumable compaction progress files
+  // 3. Cleans up older/temporary progress files (graceful failure handling)
+  // 4. If progress file exists, loads resumable compaction progress from it
+  // 5. If no progress or loading fails, resets state and cleans up output files
+  // (correctness-critical)
+  // 6. Creates and finalizes a resumable compaction progress writer for the
+  // compaction Returns OK on success, non-OK if directory creation, file
+  // checking, or cleanup fails.
+  Status InitializeCompactionWorkspace(
+      bool enable_resumable_compaction,
+      std::unique_ptr<FSDirectory>* output_dir,
+      std::unique_ptr<log::Writer>* resumable_compaction_progress_writer);
+
+  // Prepares compaction progress state by loading existing progress and
+  // cleaning up files Returns error if output file cleanup fails
+  // (correctness-related)
+  Status PrepareResumableCompactionProgressState(
+      bool enable_resumable_compaction);
+
+  // Finds the latest compaction progress file with timestamp in secondary path.
+  // Returns the filename of the latest progress file, empty if none found.
+  Status FindLatestResumableCompactionProgressFile(
+      std::string* latest_resumable_compaction_progress_file);
+
+  // Cleans up older compaction progress files and temporary manifest files.
+  // Keeps only the latest progress file (if any).
+  Status CleanupOldAndTemporaryResumableCompactionProgressFiles(
+      const std::string& latest_resumable_compaction_progress_file);
+
+  // Loads resumable compaction progress from a file and cleans up extra output
+  // files. After loading the progress, this function identifies and deletes any
+  // SST files in the output folder that are NOT tracked in the resumable
+  // progress state. This ensures consistency between the progress file and
+  // actual output files on disk.
+  Status LoadResumableCompactionProgressAndCleanupExtraOutputFiles(
+      const std::string& resumable_compaction_progress_file);
+
+  // Parse compaction progress from the progress file using VersionEdit
+  // accumulation Reads version edits from the manifest-like progress file and
+  // accumulates them
+  Status ParseResumableCompactionProgressFile(
+      const std::string& resumable_compaction_progress_file,
+      ResumableCompactionProgress* resumable_compaction_progress);
+
+  // Handles cases when no valid resumable compaction progress exists (empty or
+  // failed loading) - resets state and cleans up files
+  Status HandleInvalidOrEmptyResumableCompactionProgress(
+      const std::string& invalid_resumable_compaction_progress_file);
+
+  // Helper function to handle the removal of invalid progress files
+  // with proper parsing and fallback logic
+  Status HandleInvalidResumableCompactionProgressFileRemoval(
+      const std::string& invalid_resumable_compaction_progress_file);
+
+  // Cleans up temporary SST files from previous incomplete compactions.
+  // Returns OK on success, non-OK if listing directory or deleting files fails.
+  Status CleanupExistingCompactionOutputFiles();
+
+  // Finalizes compaction progress writer by creating manifest writer and
+  // progress file Returns manifest writer pointing to the newly created
+  // progress file
+  Status FinalizeResumableCompactionProgressWriter(
+      bool enable_resumable_compaction,
+      std::unique_ptr<log::Writer>* resumable_compaction_progress_writer);
+
+  // Creates a temporary progress manifest file and returns a manifest writer
+  // that can be used to write progress updates continuously during compaction
+  Status CreateResumableCompactionProgressWriter(
+      const std::string& file_path,
+      std::unique_ptr<log::Writer>* resumable_compaction_progress_writer);
+
+  // Persists initial compaction progress to manifest file
+  Status PersistInitialResumableSubcompactionProgress(
+      log::Writer* resumable_compaction_progress_writer,
+      const ResumableSubcompactionProgress& resumable_subcompaction_progress);
+
+  // Renames temporary compaction progress file to final name with current
+  // timestamp
+  Status RenameResumableCompactionProgressFile(
+      const std::string& temp_file_path, std::string* final_file_path);
+
+  // Helper method to handle progress writer failure scenarios
+  // Logs error, resets writer, cleans up files, and returns appropriate status
+  Status HandleResumableCompactionProgressWriterCreationFailure(
+      const std::string& error_message, const Status& original_status,
+      const std::string& temp_file_path, const std::string& final_file_path,
+      std::unique_ptr<log::Writer>* resumable_compaction_progress_writer);
+
+  // Helper method to clean up progress files during failure handling
+  Status CleanupResumableCompactionProgressFiles(
+      const std::string& final_resumable_compaction_progress_file_path,
+      const std::string& temp_resumable_compaction_progress_file_path);
+
+  // Helper method to delete a file if it exists
+  // Checks for existence before deletion, logs errors on failure
+  Status DeleteFileIfExists(const std::string& file_path);
+
+  // Cleans up extra compaction output files that are not part of the resumable
+  // progress Identifies existing SST files that are not tracked in
+  // resumable_compaction_progress_ and deletes them to maintain consistency
+  Status CleanupExtraCompactionOutputFiles();
+
   // Cache log readers for each log number, used for continue WAL replay
   // after recovery
   std::map<uint64_t, std::unique_ptr<LogReaderContainer>> log_readers_;
@@ -311,6 +424,9 @@ class DBImplSecondary : public DBImpl {
   std::unordered_map<ColumnFamilyData*, uint64_t> cfd_to_current_log_;
 
   const std::string secondary_path_;
+
+  // May not need to be stored
+  ResumableCompactionProgress resumable_compaction_progress_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

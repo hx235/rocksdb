@@ -8,7 +8,12 @@
 #include <cinttypes>
 
 #include "db/arena_wrapped_db_iter.h"
+#include "db/log_reader.h"
+#include "db/log_writer.h"
 #include "db/merge_context.h"
+#include "db/version_edit.h"
+#include "file/filename.h"
+#include "file/writable_file_writer.h"
 #include "logging/auto_roll_logger.h"
 #include "logging/logging.h"
 #include "monitoring/perf_context_imp.h"
@@ -823,12 +828,511 @@ Status DB::OpenAsSecondary(
   return s;
 }
 
+Status DBImplSecondary::FindLatestResumableCompactionProgressFile(
+    std::string* latest_resumable_compaction_progress_file) {
+  std::vector<std::string> filenames;
+  Status s =
+      fs_->GetChildren(secondary_path_, IOOptions(), &filenames, nullptr);
+  if (!s.ok()) {
+    return s;
+  }
+
+  uint64_t latest_timestamp = 0;
+  latest_resumable_compaction_progress_file->clear();
+
+  for (const auto& filename : filenames) {
+    // Skip special directory entries
+    if (filename == "." || filename == "..") {
+      continue;
+    }
+
+    uint64_t number;
+    FileType type;
+    // Only look for normal progress files, not temporary ones
+    if (ParseFileName(filename, &number, &type) &&
+        type == kResumableCompactionProgressFile) {
+      if (number > latest_timestamp) {
+        latest_timestamp = number;
+        *latest_resumable_compaction_progress_file = filename;
+      }
+    }
+  }
+
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "Found latest resumable compaction progress file: %s "
+                 "(timestamp: %" PRIu64 ")",
+                 latest_resumable_compaction_progress_file->c_str(),
+                 latest_timestamp);
+  return Status::OK();
+}
+
+Status DBImplSecondary::CleanupOldAndTemporaryResumableCompactionProgressFiles(
+    const std::string& latest_resumable_compaction_progress_file) {
+  std::vector<std::string> filenames;
+  Status s =
+      fs_->GetChildren(secondary_path_, IOOptions(), &filenames, nullptr);
+  if (!s.ok()) {
+    return s;
+  }
+
+  for (const auto& filename : filenames) {
+    // Skip special directory entries
+    if (filename == "." || filename == "..") {
+      continue;
+    }
+
+    uint64_t number;
+    FileType type;
+
+    // Critical requirement: All resumable compaction progress files must be
+    // parseable
+    if (filename.find(kResumableCompactionProgressFileNamePrefix) == 0) {
+      if (!ParseFileName(filename, &number, &type)) {
+        ROCKS_LOG_ERROR(
+            immutable_db_options_.info_log,
+            "CRITICAL ERROR: Failed to parse resumable compaction progress "
+            "filename: %s. "
+            "This indicates file system corruption or invalid file naming.",
+            filename.c_str());
+        return Status::Corruption(
+            "Failed to parse resumable compaction progress filename", filename);
+      }
+
+      bool should_delete = false;
+      if (type == kResumableCompactionProgressFile) {
+        // Delete old progress files (not the latest one)
+        should_delete = (filename != latest_resumable_compaction_progress_file);
+      } else if (type == kTempFile) {
+        // Delete all temporary resumable compaction progress files
+        should_delete = true;
+      }
+
+      if (should_delete) {
+        std::string file_path = secondary_path_ + "/" + filename;
+
+        Status delete_status = fs_->DeleteFile(file_path, IOOptions(), nullptr);
+        if (!delete_status.ok()) {
+          return delete_status;
+        }
+      }
+    }
+  }
+  return Status::OK();
+}
+
+Status
+DBImplSecondary::LoadResumableCompactionProgressAndCleanupExtraOutputFiles(
+    const std::string& resumable_compaction_progress_file) {
+  Status s = ParseResumableCompactionProgressFile(
+      resumable_compaction_progress_file, &resumable_compaction_progress_);
+  if (s.ok()) {
+    s = CleanupExtraCompactionOutputFiles();
+  }
+  return s;
+}
+
+Status DBImplSecondary::ParseResumableCompactionProgressFile(
+    const std::string& resumable_compaction_progress_file,
+    ResumableCompactionProgress* resumable_compaction_progress) {
+  // Use centralized filename function instead of manual path construction
+  uint64_t timestamp;
+  FileType type;
+  if (!ParseFileName(resumable_compaction_progress_file, &timestamp, &type) ||
+      type != kResumableCompactionProgressFile) {
+    return Status::InvalidArgument(
+        "Invalid resumable compaction progress filename",
+        resumable_compaction_progress_file);
+  }
+
+  std::string resumable_compaction_progress_file_path =
+      ResumableCompactionProgressFileName(secondary_path_, timestamp);
+
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "Parsing resumable compaction progress from file: %s",
+                 resumable_compaction_progress_file_path.c_str());
+
+  // Open the progress file for reading
+  std::unique_ptr<FSSequentialFile> file;
+  Status s = fs_->NewSequentialFile(resumable_compaction_progress_file_path,
+                                    FileOptions(), &file, nullptr);
+  if (!s.ok()) {
+    return s;
+  }
+
+  std::unique_ptr<SequentialFileReader> file_reader(new SequentialFileReader(
+      std::move(file), resumable_compaction_progress_file_path,
+      immutable_db_options_.log_readahead_size, io_tracer_));
+
+  log::Reader resumable_compaction_progress_reader(
+      nullptr, std::move(file_reader), nullptr, true, 0);
+
+  ResumableSubcompactionProgressBuilder progress_builder;
+  std::string record;
+  Slice slice;
+
+  // Read and process each VersionEdit from the progress file
+  while (resumable_compaction_progress_reader.ReadRecord(&slice, &record)) {
+    VersionEdit edit;
+    s = edit.DecodeFrom(slice);
+    if (!s.ok()) {
+      ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                     "Failed to decode VersionEdit from resumable compaction "
+                     "progress file: %s",
+                     s.ToString().c_str());
+      break;
+    }
+
+    // Process the VersionEdit to accumulate progress
+    progress_builder.ProcessVersionEdit(edit);
+  }
+
+  if (s.ok()) {
+    if (progress_builder.HasAccumulatedResumableSubcompactionProgress()) {
+      // Get the accumulated progress and add it to the result
+      resumable_compaction_progress->clear();
+      resumable_compaction_progress->push_back(
+          progress_builder.GetAccumulatedResumableSubcompactionProgress());
+
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                     "Successfully parsed resumable compaction progress: %s",
+                     resumable_compaction_progress->back().ToString().c_str());
+    } else {
+      s = Status::Incomplete(
+          "No resumable compaction progress results from the parsing");
+    }
+  }
+
+  return s;
+}
+
+Status DBImplSecondary::RenameResumableCompactionProgressFile(
+    const std::string& temp_file_path, std::string* final_file_path) {
+  uint64_t current_time = env_->NowMicros();
+  *final_file_path =
+      ResumableCompactionProgressFileName(secondary_path_, current_time);
+  TEST_SYNC_POINT_CALLBACK(
+      "DBImplSecondary::RenameResumableCompactionProgressFile:BeforeRename",
+      nullptr);
+  Status s =
+      fs_->RenameFile(temp_file_path, *final_file_path, IOOptions(), nullptr);
+  TEST_SYNC_POINT_CALLBACK(
+      "DBImplSecondary::RenameResumableCompactionProgressFile:AfterRename",
+      nullptr);
+  if (s.ok()) {
+    ROCKS_LOG_INFO(
+        immutable_db_options_.info_log,
+        "Renamed temporary resumable compaction progress file %s to %s",
+        temp_file_path.c_str(), final_file_path->c_str());
+  }
+  return s;
+}
+
+Status DBImplSecondary::CleanupExistingCompactionOutputFiles() {
+  std::vector<std::string> filenames;
+  Status s =
+      fs_->GetChildren(secondary_path_, IOOptions(), &filenames, nullptr);
+  if (!s.ok()) {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                   "Failed to list files in existing output directory: %s",
+                   s.ToString().c_str());
+    return s;
+  }
+
+  for (const auto& file_name : filenames) {
+    if (file_name == "." || file_name == "..") {
+      continue;
+    }
+
+    // Use centralized ParseFileName to identify SST files
+    uint64_t number;
+    FileType type;
+    if (ParseFileName(file_name, &number, &type) && type == kTableFile) {
+      // Use centralized function to construct table file path
+      std::string file_path = MakeTableFileName(secondary_path_, number);
+      Status delete_status = fs_->DeleteFile(file_path, IOOptions(), nullptr);
+      if (!delete_status.ok()) {
+        return delete_status;
+      }
+    }
+  }
+
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "Cleared existing compaction output SST files from directory: %s",
+      secondary_path_.c_str());
+  return Status::OK();
+}
+
+Status DBImplSecondary::CleanupExtraCompactionOutputFiles() {
+  // Collect all expected output file numbers from resumable compaction progress
+  std::unordered_set<uint64_t> expected_output_files;
+
+  for (const auto& subcompaction_progress : resumable_compaction_progress_) {
+    // Collect file numbers from regular output files
+    for (const auto* file_metadata :
+         subcompaction_progress.OutputFiles(false)) {
+      if (file_metadata != nullptr) {
+        expected_output_files.insert(file_metadata->fd.GetNumber());
+      }
+    }
+
+    // Collect file numbers from proximal level output files
+    for (const auto* file_metadata : subcompaction_progress.OutputFiles(true)) {
+      if (file_metadata != nullptr) {
+        expected_output_files.insert(file_metadata->fd.GetNumber());
+      }
+    }
+  }
+
+  // Scan the secondary path for existing SST files
+  std::vector<std::string> filenames;
+  Status s =
+      fs_->GetChildren(secondary_path_, IOOptions(), &filenames, nullptr);
+  if (!s.ok()) {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                   "Failed to list files in secondary path for cleanup: %s",
+                   s.ToString().c_str());
+    return s;
+  }
+
+  for (const auto& file_name : filenames) {
+    if (file_name == "." || file_name == "..") {
+      continue;
+    }
+
+    // Parse filename to identify SST files
+    uint64_t file_number;
+    FileType type;
+    if (ParseFileName(file_name, &file_number, &type) && type == kTableFile) {
+      // Check if this file is expected (part of resumable progress)
+      if (expected_output_files.find(file_number) ==
+          expected_output_files.end()) {
+        // This SST file is NOT part of the resumable progress - delete it
+        std::string file_path = MakeTableFileName(secondary_path_, file_number);
+        Status delete_status = fs_->DeleteFile(file_path, IOOptions(), nullptr);
+        if (!delete_status.ok()) {
+          return delete_status;
+        }
+      }
+    }
+  }
+  return Status::OK();
+}
+
+Status DBImplSecondary::InitializeCompactionWorkspace(
+    bool enable_resumable_compaction, std::unique_ptr<FSDirectory>* output_dir,
+    std::unique_ptr<log::Writer>* resumable_compaction_progress_writer) {
+  // Ensure the output directory exists
+  Status s = CreateAndNewDirectory(fs_.get(), secondary_path_, output_dir);
+  if (!s.ok()) {
+    return s;
+  }
+
+  // Find and parse existing progress, clean up old files, handle failures
+  // gracefully
+  s = PrepareResumableCompactionProgressState(enable_resumable_compaction);
+  if (!s.ok()) {
+    return s;
+  }
+
+  // Create and finalize resumable compaction progress manifest writer BEFORE
+  // compaction Don't fail the entire process if this fails - just proceed
+  // without progress writer
+  s = FinalizeResumableCompactionProgressWriter(
+      enable_resumable_compaction, resumable_compaction_progress_writer);
+  if (!s.ok()) {
+    return s;
+  }
+
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "Initialized compaction workspace with %zu resumable subcompaction(s)",
+      resumable_compaction_progress_.size());
+
+  return Status::OK();
+}
+
+Status DBImplSecondary::PrepareResumableCompactionProgressState(
+    bool enable_resumable_compaction) {
+  // Step 1: Find latest progress file (graceful failure handling)
+  std::string latest_resumable_compaction_progress_file = "";
+  if (enable_resumable_compaction) {
+    Status find_status = FindLatestResumableCompactionProgressFile(
+        &latest_resumable_compaction_progress_file);
+    if (!find_status.ok()) {
+      ROCKS_LOG_INFO(
+          immutable_db_options_.info_log,
+          "Failed to find latest resumable compaction progress file: %s. "
+          "Starting fresh compaction.",
+          find_status.ToString().c_str());
+      latest_resumable_compaction_progress_file.clear();
+    }
+  }
+  // Step 2: Clean up old/temporary files - FAIL the process if cleanup fails
+  // (requirement 2.1)
+  Status cleanup_status =
+      CleanupOldAndTemporaryResumableCompactionProgressFiles(
+          latest_resumable_compaction_progress_file);
+  if (!cleanup_status.ok()) {
+    ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                    "Failed to cleanup older/temporary resumable compaction "
+                    "progress files: %s. Will fail the compaction.",
+                    cleanup_status.ToString().c_str());
+    return cleanup_status;  // FAIL the process - requirement 2.1
+  }
+
+  // Step 3: Try to load progress from latest file
+  if (!latest_resumable_compaction_progress_file.empty()) {
+    Status load_status =
+        LoadResumableCompactionProgressAndCleanupExtraOutputFiles(
+            latest_resumable_compaction_progress_file);
+    if (load_status.ok()) {
+      ROCKS_LOG_INFO(
+          immutable_db_options_.info_log,
+          "Successfully loaded the latest resumable compaction progress: %zu "
+          "subcompaction(s)",
+          resumable_compaction_progress_.size());
+      return Status::OK();
+    } else {
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                     "Failed to load the latest resumable compaction "
+                     "progress from %s: %s",
+                     latest_resumable_compaction_progress_file.c_str(),
+                     load_status.ToString().c_str());
+      // Step 4: Handle failure case - CORRECTNESS CRITICAL
+      return HandleInvalidOrEmptyResumableCompactionProgress(
+          latest_resumable_compaction_progress_file);
+    }
+  }
+  // Step 4: Handle no resuamble compactin progress file case - CORRECTNESS
+  // CRITICAL
+  return HandleInvalidOrEmptyResumableCompactionProgress("");
+}
+
+Status DBImplSecondary::DeleteFileIfExists(const std::string& file_path) {
+  if (file_path.empty()) {
+    return Status::OK();
+  }
+
+  // Check if file exists before attempting deletion
+  IOOptions io_opts;
+  Status exists_status = fs_->FileExists(file_path, io_opts, nullptr);
+
+  if (exists_status.IsNotFound()) {
+    return Status::OK();  // File doesn't exist - nothing to delete
+  }
+
+  if (!exists_status.ok()) {
+    ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                    "Failed to check file existence %s: %s", file_path.c_str(),
+                    exists_status.ToString().c_str());
+    return exists_status;
+  }
+
+  // File exists - delete it
+  Status delete_status = fs_->DeleteFile(file_path, io_opts, nullptr);
+  if (!delete_status.ok()) {
+    ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                    "Failed to delete file %s: %s", file_path.c_str(),
+                    delete_status.ToString().c_str());
+  }
+  return delete_status;
+}
+
+Status DBImplSecondary::HandleInvalidOrEmptyResumableCompactionProgress(
+    const std::string& invalid_resumable_compaction_progress_file) {
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "Cleaning up invalid resumable compaction progress");
+
+  // Step 1: Clear internal state
+  resumable_compaction_progress_.clear();
+
+  // Step 2: Handle invalid progress file removal
+  Status s;
+  if (!invalid_resumable_compaction_progress_file.empty()) {
+    s = HandleInvalidResumableCompactionProgressFileRemoval(
+        invalid_resumable_compaction_progress_file);
+    if (!s.ok()) {
+      ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                      "Failed to remove invalid progress file: %s",
+                      s.ToString().c_str());
+      return s;
+    }
+  }
+
+  // Step 3: Remove existing compaction output files (critical for correctness)
+  s = CleanupExistingCompactionOutputFiles();
+  if (!s.ok()) {
+    ROCKS_LOG_ERROR(immutable_db_options_.info_log,
+                    "Failed to cleanup existing compaction output files: %s",
+                    s.ToString().c_str());
+    return s;
+  }
+
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "Successfully cleaned up for invalid resumable compaction progress");
+  return Status::OK();
+}
+
+Status DBImplSecondary::HandleInvalidResumableCompactionProgressFileRemoval(
+    const std::string& invalid_resumable_compaction_progress_file) {
+  // Parse the filename to determine proper removal strategy
+  uint64_t timestamp;
+  FileType type;
+
+  if (ParseFileName(invalid_resumable_compaction_progress_file, &timestamp,
+                    &type)) {
+    // Successfully parsed filename - use centralized functions
+    if (type == kResumableCompactionProgressFile) {
+      const std::string file_path =
+          ResumableCompactionProgressFileName(secondary_path_, timestamp);
+      return DeleteFileIfExists(file_path);
+    } else {
+      // File parsed successfully but wrong type - this is a critical error
+      ROCKS_LOG_ERROR(
+          immutable_db_options_.info_log,
+          "CRITICAL ERROR: File %s parsed successfully but has unexpected type "
+          "%d, expected %d. "
+          "This indicates file system corruption or invalid file naming.",
+          invalid_resumable_compaction_progress_file.c_str(),
+          static_cast<int>(type),
+          static_cast<int>(kResumableCompactionProgressFile));
+      return Status::Corruption(
+          "Resumable compaction progress file has unexpected type",
+          invalid_resumable_compaction_progress_file);
+    }
+  } else {
+    // Filename parsing failed - this is a critical error for resumable
+    // compaction files
+    ROCKS_LOG_ERROR(
+        immutable_db_options_.info_log,
+        "CRITICAL ERROR: Failed to parse resumable compaction progress "
+        "filename: %s. "
+        "This indicates file system corruption or invalid file naming.",
+        invalid_resumable_compaction_progress_file.c_str());
+    return Status::Corruption(
+        "Failed to parse resumable compaction progress filename",
+        invalid_resumable_compaction_progress_file);
+  }
+}
+
 Status DBImplSecondary::CompactWithoutInstallation(
     const OpenAndCompactOptions& options, ColumnFamilyHandle* cfh,
     const CompactionServiceInput& input, CompactionServiceResult* result) {
   if (options.canceled && options.canceled->load(std::memory_order_acquire)) {
     return Status::Incomplete(Status::SubCode::kManualCompactionPaused);
   }
+
+  std::unique_ptr<FSDirectory> output_dir;
+  std::unique_ptr<log::Writer> resumable_compaction_progress_writer;
+  Status s = InitializeCompactionWorkspace(
+      options.enable_resumable_compaction, &output_dir,
+      &resumable_compaction_progress_writer);
+  if (!s.ok()) {
+    return s;
+  }
+
   InstrumentedMutexLock l(&mutex_);
   auto cfd = static_cast_with_check<ColumnFamilyHandleImpl>(cfh)->cfd();
   if (!cfd) {
@@ -856,7 +1360,7 @@ Status DBImplSecondary::CompactWithoutInstallation(
       cfd->ioptions().level_compaction_dynamic_level_bytes);
 
   std::vector<CompactionInputFiles> input_files;
-  Status s = cfd->compaction_picker()->GetCompactionInputsFromFileNumbers(
+  s = cfd->compaction_picker()->GetCompactionInputsFromFileNumbers(
       &input_files, &input_set, vstorage, comp_options);
   if (!s.ok()) {
     ROCKS_LOG_ERROR(
@@ -889,13 +1393,6 @@ Status DBImplSecondary::CompactWithoutInstallation(
   assert(c != nullptr);
   c->FinalizeInputInfo(version);
 
-  // Create output directory if it's not existed yet
-  std::unique_ptr<FSDirectory> output_dir;
-  s = CreateAndNewDirectory(fs_.get(), secondary_path_, &output_dir);
-  if (!s.ok()) {
-    return s;
-  }
-
   LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL,
                        immutable_db_options_.info_log.get());
 
@@ -913,13 +1410,15 @@ Status DBImplSecondary::CompactWithoutInstallation(
       options.canceled ? *options.canceled : kManualCompactionCanceledFalse_,
       input.db_id, db_session_id_, secondary_path_, input, result);
 
-  compaction_job.Prepare();
+  compaction_job.Prepare(resumable_compaction_progress_,
+                         resumable_compaction_progress_writer.get());
 
   mutex_.Unlock();
   s = compaction_job.Run();
   mutex_.Lock();
 
-  // clean up
+  // NOTE: These cleanup functions handle metadata and state cleanup only and
+  // not the physical files
   compaction_job.io_status().PermitUncheckedError();
   compaction_job.CleanupCompaction();
   c->ReleaseCompactionFiles(s);
@@ -1082,4 +1581,162 @@ Status DB::OpenAndCompact(
                         output, override_options);
 }
 
+Status DBImplSecondary::CleanupResumableCompactionProgressFiles(
+    const std::string& final_resumable_compaction_progress_file_path,
+    const std::string& temp_resumable_compaction_progress_file_path) {
+  const std::vector<std::string> files_to_clean = {
+      final_resumable_compaction_progress_file_path,
+      temp_resumable_compaction_progress_file_path};
+
+  for (const auto& file_path : files_to_clean) {
+    Status s = DeleteFileIfExists(file_path);
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  return Status::OK();
+}
+
+Status DBImplSecondary::CreateResumableCompactionProgressWriter(
+    const std::string& file_path,
+    std::unique_ptr<log::Writer>* resumable_compaction_progress_writer) {
+  std::unique_ptr<FSWritableFile> file;
+  Status s = fs_->NewWritableFile(file_path, FileOptions(), &file, nullptr);
+  if (!s.ok()) {
+    return s;
+  }
+
+  std::unique_ptr<WritableFileWriter> file_writer(
+      new WritableFileWriter(std::move(file), file_path, FileOptions()));
+
+  // Create log writer for continuous progress updates
+  resumable_compaction_progress_writer->reset(
+      new log::Writer(std::move(file_writer), 0, false));
+
+  ROCKS_LOG_INFO(immutable_db_options_.info_log,
+                 "Created progress manifest writer for file: %s",
+                 file_path.c_str());
+  return Status::OK();
+}
+
+Status DBImplSecondary::PersistInitialResumableSubcompactionProgress(
+    log::Writer* resumable_compaction_progress_writer,
+    const ResumableSubcompactionProgress& resumable_subcompaction_progress) {
+  if (!resumable_compaction_progress_writer) {
+    return Status::InvalidArgument(
+        "Resumable compaction progress writer is null");
+  }
+
+  // Create VersionEdit with the initial resumable subcompaction progress
+  VersionEdit edit;
+  edit.SetResumableSubcompactionProgress(resumable_subcompaction_progress);
+
+  // Encode and write the VersionEdit
+  std::string record;
+  if (!edit.EncodeTo(&record)) {
+    return Status::IOError("Failed to encode resumable compaction progress");
+  }
+
+  Status s =
+      resumable_compaction_progress_writer->AddRecord(WriteOptions(), record);
+  if (s.ok()) {
+    s = resumable_compaction_progress_writer->file()->Sync(IOOptions(), false);
+  }
+
+  if (s.ok()) {
+    ROCKS_LOG_INFO(
+        immutable_db_options_.info_log,
+        "Successfully persisted initial resumable compaction progress: %s",
+        resumable_subcompaction_progress.ToString().c_str());
+  }
+  return s;
+}
+
+Status DBImplSecondary::HandleResumableCompactionProgressWriterCreationFailure(
+    const std::string& error_message, const Status& original_status,
+    const std::string& temp_file_path, const std::string& final_file_path,
+    std::unique_ptr<log::Writer>* resumable_compaction_progress_writer) {
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "%s: %s. Continuing without progress persistence after clean up.",
+      error_message.c_str(), original_status.ToString().c_str());
+
+  resumable_compaction_progress_writer->reset();
+  Status cleanup_s =
+      CleanupResumableCompactionProgressFiles(final_file_path, temp_file_path);
+
+  if (!cleanup_s.ok()) {
+    ROCKS_LOG_ERROR(
+        immutable_db_options_.info_log,
+        "Failed to clean up resumable compaction progress files: %s. "
+        "Will fail the compaction process.",
+        cleanup_s.ToString().c_str());
+    return cleanup_s;  // FAIL the process - requirement 2.3
+  }
+
+  return Status::OK();  // Continue without progress writer
+}
+
+Status DBImplSecondary::FinalizeResumableCompactionProgressWriter(
+    bool enable_resumable_compaction,
+    std::unique_ptr<log::Writer>* resumable_compaction_progress_writer) {
+  if (!enable_resumable_compaction) {
+    resumable_compaction_progress_writer->reset();
+    return Status::OK();
+  }
+
+  uint64_t timestamp = env_->NowMicros();
+  const std::string temp_file_path =
+      TempResumableCompactionProgressFileName(secondary_path_, timestamp);
+
+  // Step 1: Create temporary progress writer
+  Status s = CreateResumableCompactionProgressWriter(
+      temp_file_path, resumable_compaction_progress_writer);
+  if (!s.ok()) {
+    return HandleResumableCompactionProgressWriterCreationFailure(
+        "Failed to create temporary resumable compaction progress writer", s,
+        temp_file_path, "", resumable_compaction_progress_writer);
+  }
+
+  // Step 2: Persist existing progress if available
+  if (!resumable_compaction_progress_.empty()) {
+    s = PersistInitialResumableSubcompactionProgress(
+        resumable_compaction_progress_writer->get(),
+        resumable_compaction_progress_[0]);
+    if (!s.ok()) {
+      return HandleResumableCompactionProgressWriterCreationFailure(
+          "Failed to persist existing resumable compaction progress", s,
+          temp_file_path, "", resumable_compaction_progress_writer);
+    }
+  }
+
+  // Step 3: Close writer and rename temp file to final
+  resumable_compaction_progress_writer->reset();
+  std::string final_file_path;
+  s = RenameResumableCompactionProgressFile(temp_file_path, &final_file_path);
+  if (!s.ok()) {
+    return HandleResumableCompactionProgressWriterCreationFailure(
+        "Failed to rename temporary resumable compaction progress file", s,
+        temp_file_path, final_file_path, resumable_compaction_progress_writer);
+  }
+
+  // Step 4: Create final progress writer
+  s = CreateResumableCompactionProgressWriter(
+      final_file_path, resumable_compaction_progress_writer);
+  if (!s.ok()) {
+    return HandleResumableCompactionProgressWriterCreationFailure(
+        "Failed to create final resumable compaction progress writer", s, "",
+        final_file_path, resumable_compaction_progress_writer);
+  }
+
+  ROCKS_LOG_INFO(
+      immutable_db_options_.info_log,
+      "Successfully created resumable compaction progress writer: %s (%s)",
+      final_file_path.c_str(),
+      resumable_compaction_progress_.empty() ? "empty"
+                                             : "with existing progress");
+
+  return Status::OK();
+}
 }  // namespace ROCKSDB_NAMESPACE

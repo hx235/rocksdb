@@ -10,10 +10,12 @@
 #include "db/db_impl/db_impl_secondary.h"
 #include "db/db_test_util.h"
 #include "db/db_with_timestamp_test_util.h"
+#include "file/filename.h"
 #include "port/stack_trace.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "test_util/sync_point.h"
 #include "test_util/testutil.h"
+#include "utilities/fault_injection_fs.h"
 #include "utilities/merge_operators/string_append/stringappend2.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -1828,6 +1830,396 @@ TEST_F(DBSecondaryTestWithTimestamp, Iterators) {
   Close();
 }
 
+// Test class specifically for testing resumable compaction progress
+class DBSecondaryResumableCompactionTest : public DBSecondaryTestBase {
+ public:
+  explicit DBSecondaryResumableCompactionTest()
+      : DBSecondaryTestBase("db_secondary_resumable_compaction_test") {
+    fault_fs_.reset(new FaultInjectionTestFS(env_->GetFileSystem()));
+    fault_env_.reset(new CompositeEnvWrapper(env_, fault_fs_));
+  }
+
+  ~DBSecondaryResumableCompactionTest() {
+    fault_fs_->SetFilesystemActive(true);
+  }
+
+ protected:
+  std::shared_ptr<FaultInjectionTestFS> fault_fs_;
+  std::unique_ptr<Env> fault_env_;
+
+  // Helper function to clean up all files in secondary directory
+  void CleanupSecondaryFiles() {
+    std::vector<std::string> files;
+    Status s = env_->GetChildren(secondary_path_, &files);
+    if (!s.ok()) {
+      return;  // Directory might not exist, which is fine
+    }
+
+    for (const auto& file : files) {
+      // Skip directories (., ..)
+      if (file == "." || file == "..") {
+        continue;
+      }
+
+      std::string full_path = secondary_path_ + "/" + file;
+      env_->DeleteFile(full_path).PermitUncheckedError();
+    }
+  }
+};
+
+TEST_F(DBSecondaryResumableCompactionTest,
+       PrepareResumableCompactionProgressStateTest) {
+  Options options = GetDefaultOptions();
+  options.env = fault_env_.get();
+  Reopen(options);
+
+  // Create some test data for compaction
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_OK(Put("foo" + std::to_string(i), "foo_value" + std::to_string(i)));
+    ASSERT_OK(Put("bar" + std::to_string(i), "bar_value" + std::to_string(i)));
+    ASSERT_OK(Flush());
+  }
+
+  // Get metadata to create proper CompactionServiceInput
+  ColumnFamilyMetaData meta;
+  db_->GetColumnFamilyMetaData(&meta);
+  ASSERT_GE(meta.levels[0].files.size(), 1);
+
+  // Create a CompactionServiceInput with actual files for testing
+  CompactionServiceInput compaction_input;
+  compaction_input.output_level = 1;
+  ASSERT_OK(db_->GetDbIdentity(compaction_input.db_id));
+  compaction_input.cf_name = "default";
+  compaction_input.snapshots = {};
+
+  // Add actual L0 files to the compaction input
+  for (const auto& file : meta.levels[0].files) {
+    ASSERT_EQ(0, meta.levels[0].level);
+    compaction_input.input_files.push_back(file.name);
+  }
+  ASSERT_GE(compaction_input.input_files.size(), 1);
+
+  OpenAndCompactOptions open_compact_options;
+  open_compact_options.enable_resumable_compaction = true;
+  CompactionServiceResult compaction_result;
+
+  Close();  // Close primary before opening secondary
+
+  // Test Case 1: No existing progress file - should start fresh
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+
+    // Clear any existing progress files in secondary path
+    CleanupSecondaryFiles();
+
+    // This should succeed and start with empty progress
+    ASSERT_OK(db_secondary_full()->TEST_CompactWithoutInstallation(
+        open_compact_options, db_secondary_->DefaultColumnFamily(),
+        compaction_input, &compaction_result));
+
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+
+  // Test Case 2: Multiple progress files - should pick the latest and clean up
+  // others
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+
+    // Create multiple progress files with different timestamps using new naming
+    // convention
+    std::vector<std::string> progress_files = {
+        ResumableCompactionProgressFileName(secondary_path_, 100000),  // older
+        ResumableCompactionProgressFileName(secondary_path_,
+                                            200000),  // newer (latest)
+        ResumableCompactionProgressFileName(secondary_path_, 150000)  // middle
+    };
+
+    for (const auto& file_path : progress_files) {
+      std::unique_ptr<WritableFile> file;
+      ASSERT_OK(env_->NewWritableFile(file_path, &file, EnvOptions()));
+      ASSERT_OK(file->Append("dummy content"));
+      ASSERT_OK(file->Close());
+    }
+
+    // Also create a temporary file that should be cleaned up
+    std::string temp_file =
+        TempResumableCompactionProgressFileName(secondary_path_, 123456);
+    std::unique_ptr<WritableFile> temp_writable_file;
+    ASSERT_OK(
+        env_->NewWritableFile(temp_file, &temp_writable_file, EnvOptions()));
+    ASSERT_OK(temp_writable_file->Append("temp content"));
+    ASSERT_OK(temp_writable_file->Close());
+
+    // Verify all files exist before cleanup operation
+    ASSERT_TRUE(env_->FileExists(progress_files[0]).ok());  // 100000 (older)
+    ASSERT_TRUE(env_->FileExists(progress_files[1]).ok());  // 200000 (latest)
+    ASSERT_TRUE(env_->FileExists(progress_files[2]).ok());  // 150000 (middle)
+    ASSERT_TRUE(env_->FileExists(temp_file).ok());          // temp file
+
+    // This should succeed, pick the latest file (200000), and clean up others
+    ASSERT_OK(db_secondary_full()->TEST_CompactWithoutInstallation(
+        open_compact_options, db_secondary_->DefaultColumnFamily(),
+        compaction_input, &compaction_result));
+
+    // Verify old files were cleaned up
+    ASSERT_NOK(
+        env_->FileExists(progress_files[0]));  // 100000 should be deleted
+    ASSERT_NOK(
+        env_->FileExists(progress_files[2]));  // 150000 should be deleted
+    ASSERT_NOK(env_->FileExists(temp_file));   // temp should be deleted
+
+    // Clean up any remaining progress files
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+
+  // Test Case 3: CleanupOldAndTemporaryResumableCompactionProgressFiles fails -
+  // should fail
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+
+    // Create a dummy old progress file using new naming convention
+    std::string old_progress_file =
+        ResumableCompactionProgressFileName(secondary_path_, 123456);
+    std::unique_ptr<WritableFile> file;
+    ASSERT_OK(env_->NewWritableFile(old_progress_file, &file, EnvOptions()));
+    ASSERT_OK(file->Append("dummy content"));
+    ASSERT_OK(file->Close());
+
+    // Set filesystem to inactive to trigger deletion failure
+    fault_fs_->SetFilesystemActive(
+        false, IOStatus::IOError("Injected DeleteFile failure"));
+
+    // This should FAIL because cleanup is critical
+    Status s = db_secondary_full()->TEST_CompactWithoutInstallation(
+        open_compact_options, db_secondary_->DefaultColumnFamily(),
+        compaction_input, &compaction_result);
+    ASSERT_NOK(s);
+    ASSERT_TRUE(s.IsIOError());
+
+    // Clean up
+    fault_fs_->SetFilesystemActive(true);
+    env_->DeleteFile(old_progress_file).PermitUncheckedError();
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+
+  // Test Case 4: Progress file exists but loading fails - should call
+  // HandleInvalidResumableCompactionProgress
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+
+    // Create some existing compaction output SST files to verify they are
+    // cleaned up using proper SST file naming convention
+    std::string existing_sst_file1 = MakeTableFileName(secondary_path_, 100001);
+    std::string existing_sst_file2 = MakeTableFileName(secondary_path_, 100002);
+    std::unique_ptr<WritableFile> file1, file2;
+    ASSERT_OK(env_->NewWritableFile(existing_sst_file1, &file1, EnvOptions()));
+    ASSERT_OK(file1->Append("existing sst content 1"));
+    ASSERT_OK(file1->Close());
+    ASSERT_OK(env_->NewWritableFile(existing_sst_file2, &file2, EnvOptions()));
+    ASSERT_OK(file2->Append("existing sst content 2"));
+    ASSERT_OK(file2->Close());
+
+    // Create a corrupted progress file using new naming convention
+    std::string corrupted_progress_file =
+        ResumableCompactionProgressFileName(secondary_path_, 345678);
+    std::unique_ptr<WritableFile> file;
+    ASSERT_OK(
+        env_->NewWritableFile(corrupted_progress_file, &file, EnvOptions()));
+    ASSERT_OK(file->Append("corrupted content that cannot be parsed"));
+    ASSERT_OK(file->Close());
+
+    // Verify existing files are present before compaction
+    ASSERT_TRUE(env_->FileExists(existing_sst_file1).ok());
+    ASSERT_TRUE(env_->FileExists(existing_sst_file2).ok());
+
+    // This should succeed by handling the invalid progress gracefully
+    ASSERT_OK(db_secondary_full()->TEST_CompactWithoutInstallation(
+        open_compact_options, db_secondary_->DefaultColumnFamily(),
+        compaction_input, &compaction_result));
+
+    // Verify the corrupted file was cleaned up
+    ASSERT_NOK(env_->FileExists(corrupted_progress_file));
+    // Verify existing compaction output SST files were cleaned up
+    ASSERT_NOK(env_->FileExists(existing_sst_file1));
+    ASSERT_NOK(env_->FileExists(existing_sst_file2));
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+
+  // Test Case 5: HandleInvalidResumableCompactionProgress cleanup fails -
+  // should fail
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+
+    // Create some SST files that should be cleaned up using proper SST file
+    // naming
+    std::string sst_file = MakeTableFileName(secondary_path_, 100003);
+    std::unique_ptr<WritableFile> file;
+    ASSERT_OK(env_->NewWritableFile(sst_file, &file, EnvOptions()));
+    ASSERT_OK(file->Append("dummy sst content"));
+    ASSERT_OK(file->Close());
+
+    // Create a corrupted progress file to trigger
+    // HandleInvalidResumableCompactionProgress using new naming convention
+    std::string corrupted_file =
+        ResumableCompactionProgressFileName(secondary_path_, 999999);
+    std::unique_ptr<WritableFile> corrupted_writable_file;
+    ASSERT_OK(env_->NewWritableFile(corrupted_file, &corrupted_writable_file,
+                                    EnvOptions()));
+    ASSERT_OK(corrupted_writable_file->Append("corrupted"));
+    ASSERT_OK(corrupted_writable_file->Close());
+
+    // Set filesystem inactive to trigger SST cleanup failure
+    fault_fs_->SetFilesystemActive(
+        false, IOStatus::IOError("Injected SST DeleteFile failure"));
+
+    // This should fail because SST cleanup failure is critical for correctness
+    Status s = db_secondary_full()->TEST_CompactWithoutInstallation(
+        open_compact_options, db_secondary_->DefaultColumnFamily(),
+        compaction_input, &compaction_result);
+    ASSERT_NOK(s);
+    ASSERT_TRUE(s.IsIOError());
+
+    // Clean up test files
+    fault_fs_->SetFilesystemActive(true);
+    env_->DeleteFile(sst_file).PermitUncheckedError();
+    env_->DeleteFile(corrupted_file).PermitUncheckedError();
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+}
+
+TEST_F(DBSecondaryResumableCompactionTest,
+       FinalizeResumableCompactionProgressWriterTest) {
+  Options options = GetDefaultOptions();
+  options.env = fault_env_.get();
+  Reopen(options);
+  Close();
+
+  // Test Case 1: Success - No existing progress
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+    CleanupSecondaryFiles();
+
+    std::unique_ptr<log::Writer> progress_writer;
+    ASSERT_OK(
+        db_secondary_full()->TEST_FinalizeResumableCompactionProgressWriter(
+            true, &progress_writer));
+
+    // Verify writer was created successfully
+    ASSERT_NE(nullptr, progress_writer.get());
+
+    // Verify a progress file was created in secondary directory
+    std::vector<std::string> files;
+    ASSERT_OK(env_->GetChildren(secondary_path_, &files));
+    bool found_progress_file = false;
+    for (const auto& file : files) {
+      // Skip special directory entries
+      if (file == "." || file == "..") {
+        continue;
+      }
+
+      // Use centralized ParseFileName to identify resumable compaction progress
+      // files
+      uint64_t number;
+      FileType type;
+      if (ParseFileName(file, &number, &type) &&
+          type == kResumableCompactionProgressFile) {
+        found_progress_file = true;
+        break;
+      }
+    }
+    ASSERT_TRUE(found_progress_file);
+
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+
+  // Test Case 4: File rename fails, cleanup succeeds
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+    CleanupSecondaryFiles();
+
+    // Inject failure at rename operation
+    SyncPoint::GetInstance()->SetCallBack(
+        "DBImplSecondary::RenameResumableCompactionProgressFile:BeforeRename",
+        [this](void* /*arg*/) {
+          fault_fs_->SetFilesystemActive(false,
+                                         IOStatus::IOError("Rename failed"));
+        });
+
+    SyncPoint::GetInstance()->SetCallBack(
+        "DBImplSecondary::RenameResumableCompactionProgressFile:AfterRename",
+        [this](void* /*arg*/) { fault_fs_->SetFilesystemActive(true); });
+    SyncPoint::GetInstance()->EnableProcessing();
+
+    std::unique_ptr<log::Writer> progress_writer;
+    Status s =
+        db_secondary_full()->TEST_FinalizeResumableCompactionProgressWriter(
+            true, &progress_writer);
+
+    SyncPoint::GetInstance()->DisableProcessing();
+    SyncPoint::GetInstance()->ClearAllCallBacks();
+
+    // Should succeed with graceful degradation (null writer)
+    ASSERT_OK(s);
+    ASSERT_EQ(nullptr, progress_writer.get());
+
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+
+  // Test Case 7: Cleanup fails - should fail the entire operation
+  {
+    Options secondary_options = options;
+    secondary_options.max_open_files = -1;
+    OpenSecondary(secondary_options);
+    CleanupSecondaryFiles();
+
+    // Create a test file that will need cleanup using centralized function
+    std::string dummy_file =
+        ResumableCompactionProgressFileName(secondary_path_, 987654);
+    std::unique_ptr<WritableFile> file;
+    ASSERT_OK(env_->NewWritableFile(dummy_file, &file, EnvOptions()));
+    ASSERT_OK(file->Close());
+
+    // Set filesystem inactive to trigger SST cleanup failure
+    fault_fs_->SetFilesystemActive(
+        false, IOStatus::IOError("Injected SST DeleteFile failure"));
+
+    std::unique_ptr<log::Writer> progress_writer;
+    Status s =
+        db_secondary_full()->TEST_FinalizeResumableCompactionProgressWriter(
+            true, &progress_writer);
+
+    // Should fail when cleanup fails (critical requirement)
+    ASSERT_NOK(s);
+    ASSERT_TRUE(s.IsIOError());
+    ASSERT_EQ(nullptr, progress_writer.get());
+
+    fault_fs_->SetFilesystemActive(true);
+
+    CloseSecondary();
+    CleanupSecondaryFiles();
+  }
+}
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

@@ -326,7 +326,9 @@ CompactionServiceCompactionJob::CompactionServiceCompactionJob(
       compaction_input_(compaction_service_input),
       compaction_result_(compaction_service_result) {}
 
-void CompactionServiceCompactionJob::Prepare() {
+void CompactionServiceCompactionJob::Prepare(
+    const ResumableCompactionProgress& resumable_compaction_progress,
+    log::Writer* resumable_compaction_progress_writer) {
   std::optional<Slice> begin;
   if (compaction_input_.has_begin) {
     begin = compaction_input_.begin;
@@ -335,7 +337,9 @@ void CompactionServiceCompactionJob::Prepare() {
   if (compaction_input_.has_end) {
     end = compaction_input_.end;
   }
-  CompactionJob::Prepare(std::make_pair(begin, end));
+  CompactionJob::Prepare(std::make_pair(begin, end),
+                         resumable_compaction_progress,
+                         resumable_compaction_progress_writer);
 }
 
 Status CompactionServiceCompactionJob::Run() {
