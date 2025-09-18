@@ -287,6 +287,7 @@ class CompactionJob {
   Status CollectSubcompactionErrors();
   Status SyncOutputDirectories();
   Status VerifyOutputFiles();
+  Status VerifyIndividualOutputFile(const FileMetaData& meta);
   void SetOutputTableProperties();
   // Aggregates subcompaction output stats to internal stat, and aggregates
   // subcompaction's compaction job stats to the whole entire surrounding
