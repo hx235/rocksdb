@@ -39,9 +39,11 @@
 #include <thread>
 #include <unordered_map>
 
+#include "db/compaction/compaction_job.h"
 #include "db/db_impl/db_impl.h"
 #include "db/malloc_stats.h"
 #include "db/version_set.h"
+#include "file/filename.h"
 #include "monitoring/histogram.h"
 #include "monitoring/statistics_impl.h"
 #include "options/cf_options.h"
@@ -1861,6 +1863,15 @@ DEFINE_bool(
     ROCKSDB_NAMESPACE::MultiScanArgs(ROCKSDB_NAMESPACE::BytewiseComparator())
         .use_async_io,
     "Sets MultiScanArgs::use_async_io");
+
+DEFINE_int32(openandcompact_input_files, 10,
+             "Number of input files to generate for OpenAndCompact benchmark");
+
+DEFINE_int32(openandcompact_keys_per_file, 1000,
+             "Number of keys per file for OpenAndCompact benchmark");
+
+DEFINE_bool(openandcompact_resume_compaction, false,
+            "Whether to enable resume compaction in OpenAndCompact benchmark");
 
 namespace ROCKSDB_NAMESPACE {
 namespace {
@@ -3843,6 +3854,9 @@ class Benchmark {
         method = &Benchmark::Backup;
       } else if (name == "restore") {
         method = &Benchmark::Restore;
+      } else if (name == "OpenAndCompact") {
+        fresh_db = true;  // Enable automatic primary DB cleanup for repeat runs
+        method = &Benchmark::OpenAndCompact;
       } else if (!name.empty()) {  // No error message for empty name
         fprintf(stderr, "unknown benchmark '%s'\n", name.c_str());
         ErrorExit();
@@ -5170,6 +5184,158 @@ class Benchmark {
 
   void WriteUniqueRandom(ThreadState* thread) {
     DoWrite(thread, UNIQUE_RANDOM);
+  }
+
+  void OpenAndCompact(ThreadState* thread) {
+    if (thread->tid != 0) {
+      return;
+    }
+
+    Status create_status =
+        db_.db->GetEnv()->CreateDirIfMissing(FLAGS_secondary_path);
+    if (!create_status.ok()) {
+      fprintf(stderr, "Failed to create secondary path: %s\n",
+              create_status.ToString().c_str());
+      return;
+    }
+
+    // Discover main DB's options file - MUST exist for OpenAndCompact
+    std::string options_file;
+    Status options_status =
+        GetLatestOptionsFileName(FLAGS_db, db_.db->GetEnv(), &options_file);
+    if (!options_status.ok()) {
+      fprintf(stderr, "FAILED: Cannot find OPTIONS file in %s: %s\n",
+              FLAGS_db.c_str(), options_status.ToString().c_str());
+      return;
+    }
+
+    // Extract options file number for CompactionServiceInput
+    uint64_t options_file_number;
+    FileType type;
+    if (!ParseFileName(options_file, &options_file_number, &type) ||
+        type != kOptionsFile) {
+      fprintf(stderr, "FAILED: Cannot parse OPTIONS file number from %s\n",
+              options_file.c_str());
+      return;
+    }
+
+    // Disable auto compactions to prevent input files from disappearing
+    Status s = db_.db->SetOptions({{"disable_auto_compactions", "true"}});
+    if (!s.ok()) {
+      fprintf(stderr, "Failed to disable auto compactions: %s\n",
+              s.ToString().c_str());
+      return;
+    }
+
+    // Setup L0 files for compaction
+    s = SetupL0Files();
+    if (!s.ok()) {
+      fprintf(stderr, "Failed to setup L0 files: %s\n", s.ToString().c_str());
+      return;
+    }
+
+    // Create CompactionServiceInput for the compaction
+    CompactionServiceInput compaction_input;
+    compaction_input.cf_name = kDefaultColumnFamilyName;
+    compaction_input.output_level = 1;
+    compaction_input.db_id = "db_bench_openandcompact";
+    compaction_input.options_file_number = options_file_number;
+
+    // Get all SST files from level 0 as input files
+    std::vector<std::string> input_file_names;
+    ColumnFamilyMetaData cf_meta;
+    db_.db->GetColumnFamilyMetaData(&cf_meta);
+
+    uint64_t total_input_keys = 0;
+    uint64_t total_input_files = 0;
+
+    for (const auto& level : cf_meta.levels) {
+      if (level.level == 0) {  // Only get L0 files for compaction
+        for (const auto& file : level.files) {
+          input_file_names.push_back(file.name);
+          total_input_keys += file.num_entries;
+          total_input_files++;
+        }
+      }
+    }
+
+    compaction_input.input_files = input_file_names;
+
+    // Serialize the CompactionServiceInput to string
+    std::string input_string;
+    Status serialize_status = compaction_input.Write(&input_string);
+    if (!serialize_status.ok()) {
+      fprintf(stderr, "FAILED: Cannot serialize compaction input: %s\n",
+              serialize_status.ToString().c_str());
+      return;
+    }
+
+    // Print input information
+    fprintf(stdout, "Input files: %lu files, %lu keys\n", total_input_files,
+            total_input_keys);
+
+    // Perform external compaction with latency measurement
+    std::string output_directory =
+        FLAGS_secondary_path + "/openandcompact_" + std::to_string(thread->tid);
+    std::string result_string;
+
+    // Initialize CompactionServiceOptionsOverride with proper defaults to avoid
+    // segfault
+    CompactionServiceOptionsOverride options_override;
+    options_override.env = FLAGS_env;
+    // Provide a default table factory to avoid null pointer dereference
+    BlockBasedTableOptions table_options;
+    options_override.table_factory.reset(
+        NewBlockBasedTableFactory(table_options));
+
+    OpenAndCompactOptions options;
+    options.resume_compaciton = FLAGS_openandcompact_resume_compaction;
+
+    // Measure OpenAndCompact latency
+    uint64_t start_time = FLAGS_env->NowMicros();
+    s = DB::OpenAndCompact(options, FLAGS_db, output_directory, input_string,
+                           &result_string, options_override);
+    uint64_t end_time = FLAGS_env->NowMicros();
+
+    double latency_ms = (end_time - start_time) / 1000.0;
+
+    if (!s.ok()) {
+      fprintf(stderr, "OpenAndCompact failed: %s\n", s.ToString().c_str());
+      return;
+    }
+
+    // Parse and print output information
+    CompactionServiceResult compaction_result;
+    Status parse_status =
+        CompactionServiceResult::Read(result_string, &compaction_result);
+    if (parse_status.ok()) {
+      uint64_t total_output_size = 0;
+      for (const auto& output_file : compaction_result.output_files) {
+        total_output_size += output_file.file_size;
+      }
+
+      uint64_t num_output_files = compaction_result.output_files.size();
+      uint64_t avg_output_file_size =
+          num_output_files > 0 ? total_output_size / num_output_files : 0;
+
+      fprintf(stdout, "Output: %lu files, average size: %lu bytes (%.2f MB)\n",
+              num_output_files, avg_output_file_size,
+              avg_output_file_size / (1024.0 * 1024.0));
+    } else {
+      fprintf(stderr, "Failed to parse compaction result: %s\n",
+              parse_status.ToString().c_str());
+    }
+
+    // Print the actual operation status instead of just "completed"
+    fprintf(stdout, "OpenAndCompact status: %s\n", s.ToString().c_str());
+
+    thread->stats.FinishedOps(&db_, db_.db, 1, kOthers);
+
+    // Print latency right after performance stats
+    fprintf(stdout, "OpenAndCompact latency: %.2f ms\n", latency_ms);
+
+    // Group each benchmark run with clear separation
+    fprintf(stdout, "----------------------------------------\n");
   }
 
   class KeyGenerator {
@@ -6587,6 +6753,35 @@ class Benchmark {
     } else {
       return (origin + delta);
     }
+  }
+
+  Status SetupL0Files() {
+    for (int i = 0; i < FLAGS_openandcompact_input_files; i++) {
+      WriteOptions write_opts;
+      write_opts.disableWAL = true;
+
+      for (int key_idx = 0; key_idx < FLAGS_openandcompact_keys_per_file;
+           key_idx++) {
+        int64_t key_num = i * FLAGS_openandcompact_keys_per_file + key_idx;
+        std::unique_ptr<const char[]> key_guard;
+        Slice key = AllocateKey(&key_guard);
+        GenerateKeyFromInt(key_num, FLAGS_num, &key);
+
+        std::string value = "value_" + std::to_string(key_num);
+        Status s =
+            db_.db->Put(write_opts, db_.db->DefaultColumnFamily(), key, value);
+        if (!s.ok()) {
+          return s;
+        }
+      }
+
+      Status s = db_.db->Flush(FlushOptions(), db_.db->DefaultColumnFamily());
+      if (!s.ok()) {
+        return s;
+      }
+    }
+
+    return Status::OK();
   }
 
   // Decide the ratio of different query types
