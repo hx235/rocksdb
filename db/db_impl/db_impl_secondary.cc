@@ -6,6 +6,7 @@
 #include "db/db_impl/db_impl_secondary.h"
 
 #include <cinttypes>
+#include <iostream>
 
 #include "db/arena_wrapped_db_iter.h"
 #include "db/merge_context.h"
@@ -16,7 +17,6 @@
 #include "rocksdb/utilities/options_util.h"
 #include "util/cast_util.h"
 #include "util/write_batch_util.h"
-
 namespace ROCKSDB_NAMESPACE {
 
 DBImplSecondary::DBImplSecondary(const DBOptions& db_options,
@@ -865,6 +865,15 @@ Status DBImplSecondary::CompactWithoutInstallation(
         s.ToString().c_str(), version->DebugString(/*hex=*/true).c_str());
     return s;
   }
+  // Count total files and collect file numbers
+  std::vector<uint64_t> file_numbers;
+  if (s.ok()) {
+    for (const auto& level_input : input_files) {
+      for (const auto* file : level_input.files) {
+        file_numbers.push_back(file->fd.GetNumber());
+      }
+    }
+  }
 
   const int job_id = next_job_id_.fetch_add(1);
   JobContext job_context(job_id, true /*create_superversion*/);
@@ -885,9 +894,60 @@ Status DBImplSecondary::CompactWithoutInstallation(
       /*earliest_snapshot=*/job_context.snapshot_seqs.empty()
           ? kMaxSequenceNumber
           : job_context.snapshot_seqs.front(),
-      job_context.snapshot_checker));
+      job_context.snapshot_checker, true));
   assert(c != nullptr);
   c->FinalizeInputInfo(version);
+
+  std::vector<uint64_t> compaction_input_files_numbers;
+
+  for (size_t level_idx = 0; level_idx < c->num_input_levels(); ++level_idx) {
+    const LevelFilesBrief* level_files = c->input_levels(level_idx);
+    if (level_files->num_files > 0) {
+      for (size_t i = 0; i < level_files->num_files; ++i) {
+        compaction_input_files_numbers.push_back(
+            level_files->files[i].file_metadata->fd.GetNumber());
+      }
+    }
+  }
+
+  if (!(input.input_files.size() == file_numbers.size() &&
+        input.input_files.size() == compaction_input_files_numbers.size())) {
+    std::cout << "=== Size Mismatch Debug Information ===" << std::endl;
+    std::cout << "input.input_files.size() " << input.input_files.size()
+              << std::endl;
+    std::cout << "file_numbers.size() " << file_numbers.size() << std::endl;
+    std::cout << "compaction_input_files_numbers.size() "
+              << compaction_input_files_numbers.size() << std::endl;
+
+    // Print input.input_files contents
+    std::cout << "\ninput.input_files contents:" << std::endl;
+    for (size_t i = 0; i < input.input_files.size(); ++i) {
+      std::cout << "  [" << i << "]: " << input.input_files[i] << std::endl;
+    }
+
+    // Print input_set contents
+    std::cout << "\ninput_set contents:" << std::endl;
+    size_t idx = 0;
+    for (const auto& file_num : input_set) {
+      std::cout << "  [" << idx << "]: " << file_num << std::endl;
+      idx++;
+    }
+
+    // Print file_numbers contents
+    std::cout << "\nfile_numbers contents:" << std::endl;
+    for (size_t i = 0; i < file_numbers.size(); ++i) {
+      std::cout << "  [" << i << "]: " << file_numbers[i] << std::endl;
+    }
+
+    // Print compaction_input_files_numbers contents
+    std::cout << "\ncompaction_input_files_numbers contents:" << std::endl;
+    for (size_t i = 0; i < compaction_input_files_numbers.size(); ++i) {
+      std::cout << "  [" << i << "]: " << compaction_input_files_numbers[i]
+                << std::endl;
+    }
+
+    std::cout << "=========================================" << std::endl;
+  }
 
   // Create output directory if it's not existed yet
   std::unique_ptr<FSDirectory> output_dir;

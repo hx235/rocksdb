@@ -127,7 +127,8 @@ class CompactionPicker {
       VersionStorageInfo* vstorage, const MutableCFOptions& mutable_cf_options,
       const MutableDBOptions& mutable_db_options, uint32_t output_path_id,
       std::optional<SequenceNumber> earliest_snapshot = std::nullopt,
-      const SnapshotChecker* snapshot_checker = nullptr);
+      const SnapshotChecker* snapshot_checker = nullptr,
+      bool is_in_remote_compaction = false);
 
   // Converts a set of compaction input file numbers into
   // a list of CompactionInputFiles.

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -101,6 +102,8 @@ const char* GetCompactionReasonString(CompactionReason compaction_reason) {
       return "RoundRobinTtl";
     case CompactionReason::kRefitLevel:
       return "RefitLevel";
+    case CompactionReason::kHackRemoteCompaction:
+      return "HackRemoteCompaction";
     case CompactionReason::kNumOfReasons:
       // fall through
     default:

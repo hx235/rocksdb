@@ -10,6 +10,7 @@
 #include "db/compaction/compaction.h"
 
 #include <cinttypes>
+#include <iostream>
 #include <vector>
 
 #include "db/column_family.h"
@@ -372,9 +373,48 @@ Compaction::Compaction(
   {
     input_levels_.resize(num_input_levels());
     filtered_input_levels_.resize(num_input_levels());
+
+    size_t total_input_files = 0;
+    for (const auto& input_level : inputs_) {
+      total_input_files += input_level.files.size();
+    }
+
     if (earliest_snapshot_.has_value()) {
+      if (total_input_files == 2) {
+        std::cout << "Filtering path: " << "Is on remote compaction side ? "
+                  << (compaction_reason_ ==
+                              CompactionReason::kHackRemoteCompaction
+                          ? "true"
+                          : "false")
+                  << "earliest_snapshot_ value: " << earliest_snapshot_.value()
+                  << std::endl;
+        for (size_t level = 0; level < inputs_.size(); ++level) {
+          for (const auto* file : inputs_[level].files) {
+            std::cout << "  L" << inputs_[level].level
+                      << " file: " << file->fd.GetNumber() << ".sst"
+                      << std::endl;
+          }
+        }
+      }
       FilterInputsForCompactionIterator();
     } else {
+      if (total_input_files == 2) {
+        std::cout << "Non filtering path: " << "Is on remote compaction side ? "
+                  << (compaction_reason_ ==
+                              CompactionReason::kHackRemoteCompaction
+                          ? "true"
+                          : "false")
+                  << "earliest_snapshot_.has_value() ? "
+                  << (earliest_snapshot_.has_value() ? "true" : "false")
+                  << std::endl;
+        for (size_t level = 0; level < inputs_.size(); ++level) {
+          for (const auto* file : inputs_[level].files) {
+            std::cout << "  L" << inputs_[level].level
+                      << " file: " << file->fd.GetNumber() << ".sst"
+                      << std::endl;
+          }
+        }
+      }
       for (size_t which = 0; which < num_input_levels(); which++) {
         DoGenerateLevelFilesBrief(&input_levels_[which], inputs_[which].files,
                                   &arena_);
@@ -1125,6 +1165,68 @@ void Compaction::FilterInputsForCompactionIterator() {
   for (size_t level = 1; level < num_input_levels; level++) {
     DoGenerateLevelFilesBrief(&input_levels_[level],
                               non_start_level_input_files[level - 1], &arena_);
+  }
+
+  // ADD THIS CONDITIONAL LOGGING:
+  size_t original_total = 0;
+  size_t final_total = 0;
+
+  // Count original files
+  for (const auto& input_level : inputs_) {
+    original_total += input_level.files.size();
+  }
+
+  // Count final files (after filtering)
+  for (size_t level = 0; level < num_input_levels; level++) {
+    final_total += input_levels_[level].num_files;
+  }
+
+  if (original_total > final_total) {
+    std::cout
+        << "Is this Compaction object created in remote compaction side ? "
+        << (compaction_reason_ == CompactionReason::kHackRemoteCompaction
+                ? "true"
+                : "false")
+        << std::endl;
+
+    std::cout << "Range deletion file: " << rangedel_candidate->fd.GetNumber()
+              << ".sst" << std::endl;
+    std::cout << "  Range: [" << rangedel_start_ukey.ToString(true) << ", "
+              << rangedel_end_ukey.ToString(true) << ")" << std::endl;
+    std::cout << "  Seqno: " << rangedel_seqno << std::endl;
+
+    // Show which file got filtered
+    for (size_t level = 1; level < num_input_levels; level++) {
+      if (!filtered_input_levels_[level].empty()) {
+        for (const auto* file : filtered_input_levels_[level]) {
+          std::cout << "Filtered file: " << file->fd.GetNumber() << ".sst"
+                    << std::endl;
+          std::cout << "  Entries: " << file->num_entries
+                    << ", Range dels: " << file->num_range_deletions
+                    << std::endl;
+          std::cout << "  Seqno: [" << file->fd.smallest_seqno << ", "
+                    << file->fd.largest_seqno << "]" << std::endl;
+          std::cout << "  Keys: [" << file->smallest.user_key().ToString(true)
+                    << ", " << file->largest.user_key().ToString(true) << "]"
+                    << std::endl;
+        }
+      }
+    }
+
+    // Show the remaining file
+    std::cout << "Remaining file for compaction:" << std::endl;
+    for (size_t level = 0; level < num_input_levels; level++) {
+      if (input_levels_[level].num_files > 0) {
+        for (size_t i = 0; i < input_levels_[level].num_files; ++i) {
+          const FileMetaData* file =
+              input_levels_[level].files[i].file_metadata;
+          std::cout << "  " << file->fd.GetNumber() << ".sst (L"
+                    << inputs_[level].level << ")" << std::endl;
+        }
+      }
+    }
+
+    std::cout << std::endl;
   }
 }
 
