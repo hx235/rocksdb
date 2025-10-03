@@ -6,13 +6,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
+#include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/status.h"
 
 namespace ROCKSDB_NAMESPACE {
 // Try to migrate DB created with old_opts to be use new_opts.
-// Multiple column families is not supported.
 // It is best-effort. No guarantee to succeed.
 // A full compaction may be executed.
 // WARNING: using this to migrate from non-FIFO to FIFO compaction
@@ -21,4 +22,14 @@ namespace ROCKSDB_NAMESPACE {
 // larger than `max_table_files_size`
 Status OptionChangeMigration(std::string dbname, const Options& old_opts,
                              const Options& new_opts);
+
+// Multi-column family version of OptionChangeMigration().
+// Migrates each column family from cf_descs_old to cf_descs_new with
+// corresponding DB options changes. Same best-effort guarantees and warnings
+// apply.
+Status OptionChangeMigrationMultiCF(
+    const std::string& dbname, const DBOptions& db_options_old,
+    const DBOptions& db_options_new,
+    const std::vector<ColumnFamilyDescriptor>& cf_descs_old,
+    const std::vector<ColumnFamilyDescriptor>& cf_descs_new);
 }  // namespace ROCKSDB_NAMESPACE

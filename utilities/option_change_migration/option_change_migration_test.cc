@@ -556,6 +556,456 @@ TEST_F(DBOptionChangeMigrationTest, CompactedSrcToUniversal) {
   }
 }
 
+// Test class for multi-column family option migration
+class DBOptionChangeMigrationMultiCFTest : public DBTestBase {
+ public:
+  DBOptionChangeMigrationMultiCFTest()
+      : DBTestBase("db_option_change_migration_multi_cf_test",
+                   /*env_do_fsync=*/true) {}
+
+  void SetUp() override {
+    DBTestBase::SetUp();
+    // Create three column families
+    Options options = CurrentOptions();
+    CreateAndReopenWithCF({"cf1", "cf2"}, options);
+  }
+};
+
+TEST_F(DBOptionChangeMigrationMultiCFTest, LevelToUniversal) {
+  std::vector<std::string> cf_names = {"default", "cf1", "cf2"};
+
+  // Setup original options - level-based compaction
+  // Create fresh DBOptions instead of copying from database we'll close
+  DBOptions db_options_old;
+  db_options_old.create_if_missing = false;
+  std::vector<ColumnFamilyDescriptor> cf_descs_old;
+
+  for (int i = 0; i < static_cast<int>(handles_.size()); i++) {
+    // Create fresh ColumnFamilyOptions instead of copying from existing
+    // database
+    ColumnFamilyOptions cf_opt;
+    cf_opt.compaction_style = CompactionStyle::kCompactionStyleLevel;
+    cf_opt.level0_file_num_compaction_trigger = 3;
+    cf_opt.write_buffer_size = 64 * 1024;
+    cf_opt.target_file_size_base = 128 * 1024;
+    cf_opt.num_levels = 4;
+    cf_opt.max_bytes_for_level_multiplier = 3;
+    cf_opt.max_bytes_for_level_base = 200 * 1024;
+    cf_opt.level_compaction_dynamic_level_bytes = false;
+
+    cf_descs_old.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Close current DB before migration
+  Close();
+
+  // Open DB with old options to create some data
+  Options old_options = CurrentOptions();
+  old_options.create_if_missing = false;
+  old_options.compaction_style = CompactionStyle::kCompactionStyleLevel;
+  std::vector<ColumnFamilyHandle*> new_handles;
+  DB* db;
+
+  ASSERT_OK(DB::Open(db_options_old, dbname_, cf_descs_old, &new_handles, &db));
+
+  // Generate data in each column family
+  Random rnd(301);
+  int key_idx = 0;
+
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    for (int num = 0; num < 5; num++) {
+      for (int i = 0; i < 50; i++) {
+        ASSERT_OK(db->Put(WriteOptions(), new_handles[cf], Key(key_idx++),
+                          rnd.RandomString(500)));
+      }
+      ASSERT_OK(db->Flush(FlushOptions(), new_handles[cf]));
+    }
+  }
+
+  // Wait for compaction to finish
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    ASSERT_OK(
+        static_cast<DBImpl*>(db)->TEST_WaitForFlushMemTable(new_handles[cf]));
+    ASSERT_OK(static_cast<DBImpl*>(db)->TEST_WaitForCompact());
+  }
+
+  // Will make sure exactly those keys are in the DB after migration.
+  std::vector<std::set<std::string>> cf_keys(cf_names.size());
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    std::unique_ptr<Iterator> it(
+        db->NewIterator(ReadOptions(), new_handles[cf]));
+    it->SeekToFirst();
+    for (; it->Valid(); it->Next()) {
+      cf_keys[cf].insert(it->key().ToString());
+    }
+    ASSERT_OK(it->status());
+  }
+
+  // Close DB and clean up handles
+  for (auto* handle : new_handles) {
+    delete handle;
+  }
+  delete db;
+
+  // Setup new options - universal compaction
+  DBOptions db_options_new = db_options_old;
+  std::vector<ColumnFamilyDescriptor> cf_descs_new;
+
+  for (size_t i = 0; i < cf_names.size(); i++) {
+    ColumnFamilyOptions cf_opt = cf_descs_old[i].options;
+    cf_opt.compaction_style = CompactionStyle::kCompactionStyleUniversal;
+    cf_opt.target_file_size_base = 256 * 1024;
+    cf_opt.num_levels = 1;
+    cf_opt.max_bytes_for_level_base = 150 * 1024;
+    cf_opt.max_bytes_for_level_multiplier = 4;
+
+    cf_descs_new.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Perform the multi-CF option migration
+  ASSERT_OK(OptionChangeMigrationMultiCF(
+      dbname_, db_options_old, db_options_new, cf_descs_old, cf_descs_new));
+
+  // Reopen the DB with new options
+  ASSERT_OK(DB::Open(db_options_new, dbname_, cf_descs_new, &new_handles, &db));
+
+  // Verify data in each column family
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    std::unique_ptr<Iterator> it(
+        db->NewIterator(ReadOptions(), new_handles[cf]));
+    it->SeekToFirst();
+    for (const std::string& key : cf_keys[cf]) {
+      ASSERT_TRUE(it->Valid()) << "CF " << cf << " missing key " << key;
+      ASSERT_EQ(key, it->key().ToString()) << "CF " << cf << " key mismatch";
+      it->Next();
+    }
+    ASSERT_TRUE(!it->Valid()) << "CF " << cf << " has extra keys";
+    ASSERT_OK(it->status());
+  }
+
+  // Close DB and clean up handles
+  for (auto* handle : new_handles) {
+    delete handle;
+  }
+  delete db;
+}
+
+TEST_F(DBOptionChangeMigrationMultiCFTest, UniversalToLevel) {
+  std::vector<std::string> cf_names = {"default", "cf1", "cf2"};
+
+  // Setup original options - universal compaction
+  // Create fresh DBOptions instead of copying from database we'll close
+  DBOptions db_options_old;
+  db_options_old.create_if_missing = false;
+  std::vector<ColumnFamilyDescriptor> cf_descs_old;
+
+  for (int i = 0; i < static_cast<int>(handles_.size()); i++) {
+    // Create fresh ColumnFamilyOptions instead of copying from existing
+    // database
+    ColumnFamilyOptions cf_opt;
+    cf_opt.compaction_style = CompactionStyle::kCompactionStyleUniversal;
+    cf_opt.level0_file_num_compaction_trigger = 3;
+    cf_opt.write_buffer_size = 64 * 1024;
+    cf_opt.target_file_size_base = 128 * 1024;
+    cf_opt.num_levels = 1;
+
+    cf_descs_old.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Close current DB before migration
+  Close();
+
+  // Open DB with old options to create some data
+  Options old_options = CurrentOptions();
+  old_options.create_if_missing = false;
+  old_options.compaction_style = CompactionStyle::kCompactionStyleUniversal;
+  std::vector<ColumnFamilyHandle*> new_handles;
+  DB* db;
+
+  ASSERT_OK(DB::Open(db_options_old, dbname_, cf_descs_old, &new_handles, &db));
+
+  // Generate data in each column family
+  Random rnd(301);
+  int key_idx = 0;
+
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    for (int num = 0; num < 5; num++) {
+      for (int i = 0; i < 50; i++) {
+        ASSERT_OK(db->Put(WriteOptions(), new_handles[cf], Key(key_idx++),
+                          rnd.RandomString(500)));
+      }
+      ASSERT_OK(db->Flush(FlushOptions(), new_handles[cf]));
+    }
+  }
+
+  // Wait for compaction to finish
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    ASSERT_OK(
+        static_cast<DBImpl*>(db)->TEST_WaitForFlushMemTable(new_handles[cf]));
+    ASSERT_OK(static_cast<DBImpl*>(db)->TEST_WaitForCompact());
+  }
+
+  // Will make sure exactly those keys are in the DB after migration.
+  std::vector<std::set<std::string>> cf_keys(cf_names.size());
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    std::unique_ptr<Iterator> it(
+        db->NewIterator(ReadOptions(), new_handles[cf]));
+    it->SeekToFirst();
+    for (; it->Valid(); it->Next()) {
+      cf_keys[cf].insert(it->key().ToString());
+    }
+    ASSERT_OK(it->status());
+  }
+
+  // Close DB and clean up handles
+  for (auto* handle : new_handles) {
+    delete handle;
+  }
+  delete db;
+
+  // Setup new options - level-based compaction
+  DBOptions db_options_new = db_options_old;
+  std::vector<ColumnFamilyDescriptor> cf_descs_new;
+
+  for (size_t i = 0; i < cf_names.size(); i++) {
+    ColumnFamilyOptions cf_opt = cf_descs_old[i].options;
+    cf_opt.compaction_style = CompactionStyle::kCompactionStyleLevel;
+    cf_opt.target_file_size_base = 256 * 1024;
+    cf_opt.num_levels = 4;
+    cf_opt.max_bytes_for_level_base = 150 * 1024;
+    cf_opt.max_bytes_for_level_multiplier = 4;
+    cf_opt.level_compaction_dynamic_level_bytes = true;
+
+    cf_descs_new.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Perform the multi-CF option migration
+  ASSERT_OK(OptionChangeMigrationMultiCF(
+      dbname_, db_options_old, db_options_new, cf_descs_old, cf_descs_new));
+
+  // Reopen the DB with new options
+  ASSERT_OK(DB::Open(db_options_new, dbname_, cf_descs_new, &new_handles, &db));
+
+  // Verify data in each column family
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    std::unique_ptr<Iterator> it(
+        db->NewIterator(ReadOptions(), new_handles[cf]));
+    it->SeekToFirst();
+    for (const std::string& key : cf_keys[cf]) {
+      ASSERT_TRUE(it->Valid()) << "CF " << cf << " missing key " << key;
+      ASSERT_EQ(key, it->key().ToString()) << "CF " << cf << " key mismatch";
+      it->Next();
+    }
+    ASSERT_TRUE(!it->Valid()) << "CF " << cf << " has extra keys";
+    ASSERT_OK(it->status());
+  }
+
+  // Close DB and clean up handles
+  for (auto* handle : new_handles) {
+    delete handle;
+  }
+  delete db;
+}
+
+TEST_F(DBOptionChangeMigrationMultiCFTest, MixedCompactionStyles) {
+  std::vector<std::string> cf_names = {"default", "cf1", "cf2"};
+
+  // Setup original options - mixed compaction styles
+  // Create fresh DBOptions instead of copying from database we'll close
+  DBOptions db_options_old;
+  db_options_old.create_if_missing = false;
+  std::vector<ColumnFamilyDescriptor> cf_descs_old;
+
+  // Different compaction styles for different CFs
+  CompactionStyle styles[3] = {CompactionStyle::kCompactionStyleLevel,
+                               CompactionStyle::kCompactionStyleUniversal,
+                               CompactionStyle::kCompactionStyleLevel};
+
+  for (int i = 0; i < static_cast<int>(handles_.size()); i++) {
+    // Create fresh ColumnFamilyOptions instead of copying from existing
+    // database
+    ColumnFamilyOptions cf_opt;
+    cf_opt.compaction_style = styles[i];
+    cf_opt.level0_file_num_compaction_trigger = 3;
+    cf_opt.write_buffer_size = 64 * 1024;
+    cf_opt.target_file_size_base = 128 * 1024;
+
+    if (styles[i] == CompactionStyle::kCompactionStyleLevel) {
+      cf_opt.num_levels = 4;
+      cf_opt.max_bytes_for_level_multiplier = 3;
+      cf_opt.max_bytes_for_level_base = 200 * 1024;
+      cf_opt.level_compaction_dynamic_level_bytes = false;
+    } else {
+      cf_opt.num_levels = 1;
+    }
+
+    cf_descs_old.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Close current DB before migration
+  Close();
+
+  // Open DB with old options to create some data
+  std::vector<ColumnFamilyHandle*> new_handles;
+  DB* db;
+
+  ASSERT_OK(DB::Open(db_options_old, dbname_, cf_descs_old, &new_handles, &db));
+
+  // Generate data in each column family
+  Random rnd(301);
+  int key_idx = 0;
+
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    for (int num = 0; num < 5; num++) {
+      for (int i = 0; i < 50; i++) {
+        ASSERT_OK(db->Put(WriteOptions(), new_handles[cf], Key(key_idx++),
+                          rnd.RandomString(500)));
+      }
+      ASSERT_OK(db->Flush(FlushOptions(), new_handles[cf]));
+    }
+  }
+
+  // Wait for compaction to finish
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    ASSERT_OK(
+        static_cast<DBImpl*>(db)->TEST_WaitForFlushMemTable(new_handles[cf]));
+    ASSERT_OK(static_cast<DBImpl*>(db)->TEST_WaitForCompact());
+  }
+
+  // Will make sure exactly those keys are in the DB after migration.
+  std::vector<std::set<std::string>> cf_keys(cf_names.size());
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    std::unique_ptr<Iterator> it(
+        db->NewIterator(ReadOptions(), new_handles[cf]));
+    it->SeekToFirst();
+    for (; it->Valid(); it->Next()) {
+      cf_keys[cf].insert(it->key().ToString());
+    }
+    ASSERT_OK(it->status());
+  }
+
+  // Close DB and clean up handles
+  for (auto* handle : new_handles) {
+    delete handle;
+  }
+  delete db;
+
+  // Setup new options - switch compaction styles
+  DBOptions db_options_new = db_options_old;
+  std::vector<ColumnFamilyDescriptor> cf_descs_new;
+
+  // Flip compaction styles
+  CompactionStyle new_styles[3] = {CompactionStyle::kCompactionStyleUniversal,
+                                   CompactionStyle::kCompactionStyleLevel,
+                                   CompactionStyle::kCompactionStyleFIFO};
+
+  for (size_t i = 0; i < cf_names.size(); i++) {
+    ColumnFamilyOptions cf_opt = cf_descs_old[i].options;
+    cf_opt.compaction_style = new_styles[i];
+    cf_opt.target_file_size_base = 256 * 1024;
+
+    if (new_styles[i] == CompactionStyle::kCompactionStyleLevel) {
+      cf_opt.num_levels = 4;
+      cf_opt.max_bytes_for_level_base = 150 * 1024;
+      cf_opt.max_bytes_for_level_multiplier = 4;
+      cf_opt.level_compaction_dynamic_level_bytes = true;
+    } else if (new_styles[i] == CompactionStyle::kCompactionStyleUniversal) {
+      cf_opt.num_levels = 1;
+    } else if (new_styles[i] == CompactionStyle::kCompactionStyleFIFO) {
+      cf_opt.num_levels = 1;
+      // Set to a large value to avoid data loss during test
+      cf_opt.compaction_options_fifo.max_table_files_size =
+          std::numeric_limits<uint64_t>::max();
+    }
+
+    cf_descs_new.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Perform the multi-CF option migration
+  ASSERT_OK(OptionChangeMigrationMultiCF(
+      dbname_, db_options_old, db_options_new, cf_descs_old, cf_descs_new));
+
+  // Reopen the DB with new options
+  ASSERT_OK(DB::Open(db_options_new, dbname_, cf_descs_new, &new_handles, &db));
+
+  // Verify data in each column family
+  for (size_t cf = 0; cf < cf_names.size(); cf++) {
+    std::unique_ptr<Iterator> it(
+        db->NewIterator(ReadOptions(), new_handles[cf]));
+    it->SeekToFirst();
+    for (const std::string& key : cf_keys[cf]) {
+      ASSERT_TRUE(it->Valid()) << "CF " << cf << " missing key " << key;
+      ASSERT_EQ(key, it->key().ToString()) << "CF " << cf << " key mismatch";
+      it->Next();
+    }
+    ASSERT_TRUE(!it->Valid()) << "CF " << cf << " has extra keys";
+    ASSERT_OK(it->status());
+  }
+
+  // Close DB and clean up handles
+  for (auto* handle : new_handles) {
+    delete handle;
+  }
+  delete db;
+}
+
+TEST_F(DBOptionChangeMigrationMultiCFTest, ErrorHandling) {
+  std::vector<std::string> cf_names = {"default", "cf1", "cf2"};
+
+  // Setup original options
+  // Create fresh DBOptions instead of copying from database we'll close
+  DBOptions db_options_old;
+  db_options_old.create_if_missing = false;
+  std::vector<ColumnFamilyDescriptor> cf_descs_old;
+
+  for (int i = 0; i < static_cast<int>(handles_.size()); i++) {
+    // Create fresh ColumnFamilyOptions instead of copying from existing
+    // database
+    ColumnFamilyOptions cf_opt;
+    cf_opt.compaction_style = CompactionStyle::kCompactionStyleLevel;
+    cf_descs_old.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Close current DB before migration
+  Close();
+
+  // Create new options with mismatched column family count
+  DBOptions db_options_new = db_options_old;
+  std::vector<ColumnFamilyDescriptor> cf_descs_new;
+
+  // Use known size of cf_names instead of handles_.size() after Close()
+  for (size_t i = 0; i < cf_names.size(); i++) {
+    // Create fresh ColumnFamilyOptions instead of copying from cf_descs_old
+    ColumnFamilyOptions cf_opt;
+    cf_opt.compaction_style = CompactionStyle::kCompactionStyleUniversal;
+    cf_descs_new.emplace_back(cf_names[i], cf_opt);
+  }
+
+  // Add an extra CF descriptor
+  cf_descs_new.emplace_back("extra_cf", ColumnFamilyOptions());
+
+  // Test with mismatched CF count - should return InvalidArgument
+  Status s = OptionChangeMigrationMultiCF(
+      dbname_, db_options_old, db_options_new, cf_descs_old, cf_descs_new);
+  ASSERT_TRUE(s.IsInvalidArgument());
+  ASSERT_NE(s.ToString().find("Number of column families must match"),
+            std::string::npos);
+
+  // Fix the count but use a different name for one CF
+  cf_descs_new.pop_back();  // Remove extra CF
+  // Create fresh ColumnFamilyOptions to avoid corruption
+  ColumnFamilyOptions fresh_cf_opt;
+  fresh_cf_opt.compaction_style = CompactionStyle::kCompactionStyleUniversal;
+  cf_descs_new[1] = ColumnFamilyDescriptor("different_name", fresh_cf_opt);
+
+  // Test with mismatched CF names - should return InvalidArgument
+  s = OptionChangeMigrationMultiCF(dbname_, db_options_old, db_options_new,
+                                   cf_descs_old, cf_descs_new);
+  ASSERT_TRUE(s.IsInvalidArgument());
+  ASSERT_NE(s.ToString().find("Column family names must match"),
+            std::string::npos);
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
