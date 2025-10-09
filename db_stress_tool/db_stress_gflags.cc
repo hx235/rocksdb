@@ -861,7 +861,7 @@ DEFINE_bool(remote_compaction_failure_fall_back_to_local, true,
             "If true, remote compaction failures will be ignored and "
             "compactions will fall back to local and retried");
 
-DEFINE_bool(resume_compaction, false,
+DEFINE_bool(allow_resumption, false,
             "Enable resumable compaction testing. Jobs will be interrupted and"
             "resumed automatically. Requires "
             "remote_compaction_worker_threads > 0");

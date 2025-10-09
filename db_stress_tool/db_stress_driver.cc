@@ -79,6 +79,32 @@ bool RunStressTestImpl(SharedState* shared) {
     }
   }
 
+  // Remote compaction worker threads must be created BEFORE
+  // InitDb() to avoid performance penalty during database open with fault
+  // injection.
+  //
+  // When fault injection occurs during DB open, the database waits for
+  // compaction to finish to clean up before retrying without the injected
+  // error. However, if remote compaction threads are not created yet, the
+  // database has to wait forever.
+  uint32_t remote_compaction_worker_thread_count =
+      FLAGS_remote_compaction_worker_threads;
+  if (remote_compaction_worker_thread_count > 0) {
+    for (uint32_t i = 0; i < remote_compaction_worker_thread_count; i++) {
+      shared->IncBgThreads();
+    }
+  }
+  std::vector<ThreadState*> remote_compaction_worker_threads;
+  if (remote_compaction_worker_thread_count > 0) {
+    remote_compaction_worker_threads.reserve(
+        remote_compaction_worker_thread_count);
+    for (uint32_t i = 0; i < remote_compaction_worker_thread_count; i++) {
+      ThreadState* ts = new ThreadState(i, shared);
+      remote_compaction_worker_threads.push_back(ts);
+      db_stress_env->StartThread(RemoteCompactionWorkerThread, ts);
+    }
+  }
+
   stress->InitDb(shared);
   stress->FinishInitDb(shared);
 
@@ -100,14 +126,6 @@ bool RunStressTestImpl(SharedState* shared) {
   if (FLAGS_compressed_secondary_cache_size > 0 ||
       FLAGS_compressed_secondary_cache_ratio > 0.0) {
     shared->IncBgThreads();
-  }
-
-  uint32_t remote_compaction_worker_thread_count =
-      FLAGS_remote_compaction_worker_threads;
-  if (remote_compaction_worker_thread_count > 0) {
-    for (uint32_t i = 0; i < remote_compaction_worker_thread_count; i++) {
-      shared->IncBgThreads();
-    }
   }
 
   std::vector<ThreadState*> threads(n);
@@ -132,17 +150,6 @@ bool RunStressTestImpl(SharedState* shared) {
       FLAGS_compressed_secondary_cache_ratio > 0.0) {
     db_stress_env->StartThread(CompressedCacheSetCapacityThread,
                                &compressed_cache_set_capacity_thread);
-  }
-
-  std::vector<ThreadState*> remote_compaction_worker_threads;
-  if (remote_compaction_worker_thread_count > 0) {
-    remote_compaction_worker_threads.reserve(
-        remote_compaction_worker_thread_count);
-    for (uint32_t i = 0; i < remote_compaction_worker_thread_count; i++) {
-      ThreadState* ts = new ThreadState(i, shared);
-      remote_compaction_worker_threads.push_back(ts);
-      db_stress_env->StartThread(RemoteCompactionWorkerThread, ts);
-    }
   }
 
   // Each thread goes through the following states:
@@ -178,7 +185,8 @@ bool RunStressTestImpl(SharedState* shared) {
         stress->TrackExpectedState(shared);
       }
 
-      if (FLAGS_sync_fault_injection || FLAGS_write_fault_one_in > 0) {
+      if (FLAGS_sync_fault_injection || FLAGS_write_fault_one_in > 0 ||
+          FLAGS_metadata_write_fault_one_in > 0) {
         fault_fs_guard->SetFilesystemDirectWritable(false);
         fault_fs_guard->SetInjectUnsyncedDataLoss(FLAGS_sync_fault_injection);
         if (FLAGS_exclude_wal_from_write_fault_injection) {
@@ -186,6 +194,11 @@ bool RunStressTestImpl(SharedState* shared) {
               {FileType::kWalFile});
         }
       }
+
+      if (FLAGS_read_fault_one_in > 0 || FLAGS_metadata_read_fault_one_in > 0) {
+        fault_fs_guard->SetFilesystemDirectReadable(false);
+      }
+
       if (ShouldDisableAutoCompactionsBeforeVerifyDb()) {
         Status s = stress->EnableAutoCompaction();
         assert(s.ok());

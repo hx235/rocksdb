@@ -800,8 +800,13 @@ IOStatus FaultInjectionTestFS::FileExists(const std::string& fname,
     return GetError();
   }
 
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
+
   if (!io_s.ok()) {
     return io_s;
   }
@@ -818,8 +823,13 @@ IOStatus FaultInjectionTestFS::GetChildren(const std::string& dir,
     return GetError();
   }
 
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
+
   if (!io_s.ok()) {
     return io_s;
   }
@@ -835,8 +845,13 @@ IOStatus FaultInjectionTestFS::GetChildrenFileAttributes(
     return GetError();
   }
 
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
+
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1001,6 +1016,11 @@ IOStatus FaultInjectionTestFS::NewRandomAccessFile(
   if (!IsFilesystemActive()) {
     return GetError();
   }
+
+  if (IsFilesystemDirectReadable()) {
+    return target()->NewRandomAccessFile(fname, file_opts, result, dbg);
+  }
+
   IOStatus io_s = MaybeInjectThreadLocalError(
       FaultInjectionIOType::kRead, file_opts.io_options, fname,
       ErrorOperation::kOpen, nullptr /* result */, false /* direct_io */,
@@ -1024,6 +1044,11 @@ IOStatus FaultInjectionTestFS::NewSequentialFile(
   if (!IsFilesystemActive()) {
     return GetError();
   }
+
+  if (IsFilesystemDirectReadable()) {
+    return target()->NewSequentialFile(fname, file_opts, result, dbg);
+  }
+
   IOStatus io_s = MaybeInjectThreadLocalError(
       FaultInjectionIOType::kRead, file_opts.io_options, fname,
       ErrorOperation::kOpen, nullptr /* result */, false /* direct_io */,
@@ -1047,8 +1072,13 @@ IOStatus FaultInjectionTestFS::DeleteFile(const std::string& f,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s = MaybeInjectThreadLocalError(
-      FaultInjectionIOType::kMetadataWrite, options);
+
+  IOStatus io_s;
+  if (!IsFilesystemDirectWritable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataWrite,
+                                       options);
+  }
+
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1068,11 +1098,18 @@ IOStatus FaultInjectionTestFS::GetFileSize(const std::string& f,
   if (EndsWith(f, ".sst") && ShouldFailFilesystemGetFileSizeSst()) {
     return IOStatus::IOError("FileSystem::GetFileSize failed");
   }
+
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
+
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1100,8 +1137,13 @@ IOStatus FaultInjectionTestFS::GetFileModificationTime(const std::string& fname,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1117,8 +1159,13 @@ IOStatus FaultInjectionTestFS::RenameFile(const std::string& s,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s = MaybeInjectThreadLocalError(
-      FaultInjectionIOType::kMetadataWrite, options);
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectWritable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataWrite,
+                                       options);
+  }
+
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1163,8 +1210,12 @@ IOStatus FaultInjectionTestFS::LinkFile(const std::string& s,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s = MaybeInjectThreadLocalError(
-      FaultInjectionIOType::kMetadataWrite, options);
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectWritable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataWrite,
+                                       options);
+  }
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1208,8 +1259,13 @@ IOStatus FaultInjectionTestFS::NumFileLinks(const std::string& fname,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1225,8 +1281,13 @@ IOStatus FaultInjectionTestFS::AreFilesSame(const std::string& first,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1242,8 +1303,13 @@ IOStatus FaultInjectionTestFS::GetAbsolutePath(const std::string& db_path,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
   if (!io_s.ok()) {
     return io_s;
   }
@@ -1258,8 +1324,13 @@ IOStatus FaultInjectionTestFS::IsDirectory(const std::string& path,
   if (!IsFilesystemActive()) {
     return GetError();
   }
-  IOStatus io_s =
-      MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead, options);
+
+  IOStatus io_s;
+
+  if (!IsFilesystemDirectReadable()) {
+    io_s = MaybeInjectThreadLocalError(FaultInjectionIOType::kMetadataRead,
+                                       options);
+  }
   if (!io_s.ok()) {
     return io_s;
   }

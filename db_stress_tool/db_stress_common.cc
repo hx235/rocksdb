@@ -310,11 +310,11 @@ void RemoteCompactionWorkerThread(void* v) {
               options.table_properties_collector_factories};
 
       OpenAndCompactOptions open_compact_options;
-      open_compact_options.resume_compaciton = FLAGS_resume_compaction;
+      open_compact_options.allow_resumption = FLAGS_allow_resumption;
 
       std::shared_ptr<std::atomic<bool>> canceled = nullptr;
 
-      if (FLAGS_resume_compaction) {
+      if (FLAGS_allow_resumption) {
         canceled = std::make_shared<std::atomic<bool>>(false);
         open_compact_options.canceled = canceled.get();
 
@@ -342,7 +342,7 @@ void RemoteCompactionWorkerThread(void* v) {
                                     output_directory, serialized_input,
                                     &serialized_output, override_options);
 
-      if (s.IsManualCompactionPaused() && FLAGS_resume_compaction) {
+      if (s.IsManualCompactionPaused() && FLAGS_allow_resumption) {
         shared->EnqueueRemoteCompaction(job_id, job_info, serialized_input,
                                         output_directory,
                                         true /* was_cancelled */);

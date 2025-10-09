@@ -85,10 +85,11 @@ int db_stress_tool(int argc, char** argv) {
         new FaultInjectionTestFS(raw_env->GetFileSystem());
     fault_fs_guard.reset(fs);
     // Set it to direct writable here to initially bypass any fault injection
-    // during DB open This will correspondingly be overwritten in
+    // until DB open. This will correspondingly be overwritten in
     // StressTest::Open() for open fault injection and in RunStressTestImpl()
-    // for proper fault injection setup.
+    // for DB operation fault injection.
     fault_fs_guard->SetFilesystemDirectWritable(true);
+    fault_fs_guard->SetFilesystemDirectReadable(true);
     fault_env_guard =
         std::make_shared<CompositeEnvWrapper>(raw_env, fault_fs_guard);
     raw_env = fault_env_guard.get();

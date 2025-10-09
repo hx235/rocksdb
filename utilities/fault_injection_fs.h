@@ -213,6 +213,7 @@ class FaultInjectionTestFS : public FileSystemWrapper {
       : FileSystemWrapper(base),
         filesystem_active_(true),
         filesystem_writable_(false),
+        filesystem_readable_(false),
         inject_unsynced_data_loss_(false),
         read_unsynced_data_(true),
         allow_link_open_file_(false),
@@ -381,13 +382,6 @@ class FaultInjectionTestFS : public FileSystemWrapper {
     return filesystem_active_;
   }
 
-  // Setting filesystem_writable_ makes NewWritableFile. ReopenWritableFile,
-  // and NewRandomRWFile bypass FaultInjectionTestFS and go directly to the
-  // target FS
-  bool IsFilesystemDirectWritable() {
-    MutexLock l(&mutex_);
-    return filesystem_writable_;
-  }
   void SetFilesystemActiveNoLock(
       bool active, IOStatus error = IOStatus::Corruption("Not active")) {
     error.PermitUncheckedError();
@@ -402,9 +396,28 @@ class FaultInjectionTestFS : public FileSystemWrapper {
     error.PermitUncheckedError();
     SetFilesystemActiveNoLock(active, error);
   }
+
   void SetFilesystemDirectWritable(bool writable) {
     MutexLock l(&mutex_);
     filesystem_writable_ = writable;
+  }
+
+  // Setting filesystem_writable_ makes NewWritableFile. ReopenWritableFile,
+  // and NewRandomRWFile bypass FaultInjectionTestFS and go directly to the
+  // target FS
+  bool IsFilesystemDirectWritable() {
+    MutexLock l(&mutex_);
+    return filesystem_writable_;
+  }
+
+  void SetFilesystemDirectReadable(bool readable) {
+    MutexLock l(&mutex_);
+    filesystem_readable_ = readable;
+  }
+
+  bool IsFilesystemDirectReadable() {
+    MutexLock l(&mutex_);
+    return filesystem_readable_;
   }
 
   // If true, we buffer write data in memory to simulate data loss upon system
@@ -625,8 +638,10 @@ class FaultInjectionTestFS : public FileSystemWrapper {
   std::unordered_map<std::string, std::map<std::string, std::string>>
       dir_to_new_files_since_last_sync_;
   bool filesystem_active_;    // Record flushes, syncs, writes
-  bool filesystem_writable_;  // Bypass FaultInjectionTestFS and go directly
-                              // to underlying FS for writable files
+  bool filesystem_writable_;  // Bypass FaultInjectionTestFS write and go
+                              // directly
+  bool filesystem_readable_;  // Bypass FaultInjectionTestFS read and go
+                              // directly to underlying FS for writable files
   bool inject_unsynced_data_loss_;  // See InjectUnsyncedDataLoss()
   bool read_unsynced_data_;         // See SetReadUnsyncedData()
   bool allow_link_open_file_;       // See SetAllowLinkOpenFile()

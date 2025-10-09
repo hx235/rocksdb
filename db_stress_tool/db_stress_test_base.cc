@@ -3683,10 +3683,10 @@ void StressTest::Open(SharedState* shared, bool reopen) {
     options_.compaction_service = compaction_service;
   }
 
-  if (FLAGS_resume_compaction) {
+  if (FLAGS_allow_resumption) {
     if (FLAGS_remote_compaction_worker_threads == 0) {
       fprintf(stderr,
-              "resume_compaction requires "
+              "allow_resumption requires "
               "remote_compaction_worker_threads > 0\n");
       exit(1);
     }
@@ -3811,9 +3811,14 @@ void StressTest::Open(SharedState* shared, bool reopen) {
           fault_fs_guard
               ->FileExists(FLAGS_db + "/CURRENT", IOOptions(), nullptr)
               .ok()) {
-        if (inject_sync_fault || inject_open_write_error) {
+        if (inject_sync_fault || inject_open_write_error ||
+            inject_open_meta_write_error) {
           fault_fs_guard->SetFilesystemDirectWritable(false);
           fault_fs_guard->SetInjectUnsyncedDataLoss(inject_sync_fault);
+        }
+        if (inject_open_meta_read_error || inject_open_meta_write_error ||
+            inject_open_read_error) {
+          fault_fs_guard->SetFilesystemDirectReadable(false);
         }
         fault_fs_guard->SetThreadLocalErrorContext(
             FaultInjectionIOType::kMetadataRead,
@@ -3875,6 +3880,8 @@ void StressTest::Open(SharedState* shared, bool reopen) {
         if (inject_sync_fault || inject_open_meta_read_error ||
             inject_open_meta_write_error || inject_open_read_error ||
             inject_open_write_error) {
+          fault_fs_guard->SetFilesystemDirectWritable(true);
+          fault_fs_guard->SetFilesystemDirectReadable(true);
           fault_fs_guard->DisableAllThreadLocalErrorInjection();
 
           if (s.ok()) {
