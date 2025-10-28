@@ -5392,6 +5392,199 @@ INSTANTIATE_TEST_CASE_P(DBBasicTestDeadline, DBBasicTestDeadline,
                         ::testing::Values(std::make_tuple(true, false),
                                           std::make_tuple(false, true),
                                           std::make_tuple(true, true)));
+
+// Test for use-after-free bug when Reset() is called during best-efforts
+// recovery Bug timeline: TIME 0: First recovery creates CFD, populates
+// TableCache
+//         BlockBasedTable::Rep::ioptions binds to CFD's ioptions_ (C++
+//         reference)
+// TIME 1: Recovery fails → Reset() deletes old CFD but reuses table_cache_
+//         TableCache entries have rep_->ioptions pointing to FREED CFD
+// TIME 2: Second recovery or Get() accesses rep_->ioptions → UAF!
+TEST_F(DBBasicTest, BestEffortsRecoveryTableCacheUseAfterFree) {
+  Options options = CurrentOptions();
+  options.create_if_missing = true;
+  options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
+
+  // Create DB with SST files to populate TableCache during recovery
+  DestroyAndReopen(options);
+  ASSERT_OK(Put("key1", "value1"));
+  ASSERT_OK(Flush());
+  ASSERT_OK(Put("key2", "value2"));
+  ASSERT_OK(Flush());
+  Close();
+
+  // Find the current MANIFEST and create a newer corrupted one
+  std::vector<std::string> files;
+  ASSERT_OK(env_->GetChildren(dbname_, &files));
+  std::string manifest_file;
+  uint64_t manifest_num = 0;
+  for (const auto& file : files) {
+    if (file.find("MANIFEST-") == 0) {
+      manifest_file = file;
+      // Extract number from MANIFEST-XXXXXX
+      uint64_t num = 0;
+      FileType type;
+      ParseFileName(file, &num, &type);
+      manifest_num = num;
+      break;
+    }
+  }
+  ASSERT_FALSE(manifest_file.empty());
+
+  // Create a NEWER corrupt manifest (higher number)
+  // ManifestPicker tries manifests in descending order (newest first)
+  // So this corrupted one will be tried FIRST, fail, trigger Reset()
+  // Then it will try the older good manifest
+  std::string newer_corrupt_manifest =
+      dbname_ + "/MANIFEST-" + std::to_string(manifest_num + 1000);
+  std::string current_manifest_path = dbname_ + "/" + manifest_file;
+
+  // Read current manifest
+  std::string manifest_content;
+  ASSERT_OK(ReadFileToString(env_, current_manifest_path, &manifest_content));
+
+  // Write corrupted version with higher number (truncate to trigger corruption)
+  ASSERT_OK(WriteStringToFile(env_, manifest_content.substr(0, 50),
+                              newer_corrupt_manifest, true));
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  std::atomic<int> manifest_read_count{0};
+  std::atomic<bool> reset_called{false};
+  std::atomic<bool> table_accessed_after_reset{false};
+  std::atomic<bool> inject_failure{true};
+  std::atomic<void*> cached_table_ptr{nullptr};
+  std::atomic<void*> accessed_table_ptr{nullptr};
+
+  // SYNC POINT 1: Detect each manifest read attempt
+  // TryRecover will try multiple manifests if they fail
+  SyncPoint::GetInstance()->SetCallBack(
+      "VersionSet::TryRecoverFromOneManifest:Start", [&](void* /*arg*/) {
+        manifest_read_count++;
+        fprintf(stderr, "*** MANIFEST READ ATTEMPT #%d ***\n",
+                manifest_read_count.load());
+      });
+
+  // SYNC POINT 2: Force handler status() to return failure after first recovery
+  // This will trigger Reset() in TryRecover()
+  SyncPoint::GetInstance()->SetCallBack(
+      "VersionEditHandlerPointInTime::CheckIterationResult:Fail",
+      [&](void* status_ptr) {
+        if (inject_failure.load()) {
+          fprintf(stderr, "*** INJECTING FAILURE TO TRIGGER RESET() ***\n");
+          auto* s = static_cast<Status*>(status_ptr);
+          *s = Status::Corruption("Injected failure");
+          inject_failure.store(false);  // Only inject once
+        }
+      });
+
+  // SYNC POINT 3: Detect when Reset() is called
+  // This is the critical point where CFD is deleted but table_cache_ is reused
+  SyncPoint::GetInstance()->SetCallBack(
+      "VersionSet::Reset:Start", [&](void* /*arg*/) {
+        fprintf(stderr, "*** RESET() CALLED - CFD BEING FREED ***\n");
+        reset_called.store(true);
+
+        // Force memory allocation to trigger ASAN poisoning of freed CFD
+        // Allocate ~100MB to increase chance freed memory gets reused
+        std::vector<std::string> dummy;
+        for (int i = 0; i < 10000; i++) {
+          dummy.push_back(std::string(10000, 'x'));
+        }
+        fprintf(stderr, "*** ALLOCATED MEMORY TO TRIGGER ASAN ***\n");
+      });
+
+  // SYNC POINT 3.5: Capture cached table pointer BEFORE Reset
+  SyncPoint::GetInstance()->SetCallBack(
+      "TableCache::FindTable:0", [&](void* /*arg*/) {
+        if (manifest_read_count.load() == 1 && !reset_called.load()) {
+          // This is during first recovery, before Reset()
+          // Capture the table pointer that will be cached
+          fprintf(stderr, "*** FIRST RECOVERY: TABLE BEING CACHED ***\n");
+        }
+      });
+
+  // SYNC POINT 4: Force actual dereference of rep_->ioptions (UAF!)
+  // At this point, rep_->ioptions points to freed CFD
+  SyncPoint::GetInstance()->SetCallBack(
+      "BlockBasedTable::Get:AccessIoptions", [&](void* ioptions_ptr) {
+        if (reset_called.load()) {
+          fprintf(stderr, "*** ACCESSING IOPTIONS AFTER RESET - UAF! ***\n");
+          fprintf(stderr, "*** IOPTIONS PTR: %p ***\n", ioptions_ptr);
+          table_accessed_after_reset.store(true);
+          accessed_table_ptr.store(ioptions_ptr);
+          // Force dereference of the freed ioptions
+          auto* ioptions = static_cast<ImmutableOptions*>(ioptions_ptr);
+          // Access a field to trigger ASAN
+          volatile auto stats = ioptions->stats;
+          (void)stats;
+        } else if (manifest_read_count.load() == 1) {
+          // Capture the ioptions pointer during first recovery
+          fprintf(stderr, "*** FIRST RECOVERY: IOPTIONS PTR: %p ***\n",
+                  ioptions_ptr);
+          cached_table_ptr.store(ioptions_ptr);
+        }
+      });
+
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  // Reopen with best_efforts_recovery
+  // TryRecover will try each manifest, calling Reset() between attempts
+  options.best_efforts_recovery = true;
+  Status s = TryReopen(options);
+
+  fprintf(stderr, "*** REOPEN STATUS: %s ***\n", s.ToString().c_str());
+  fprintf(stderr, "*** MANIFEST ATTEMPTS: %d, RESET CALLED: %d ***\n",
+          manifest_read_count.load(), reset_called.load() ? 1 : 0);
+
+  // Force a Get() to access the cached table and trigger UAF
+  if (s.ok()) {
+    fprintf(stderr, "*** ISSUING GET() TO TRIGGER UAF ***\n");
+    std::string value = Get("key1");
+    fprintf(stderr, "*** GET() COMPLETED, VALUE: %s ***\n", value.c_str());
+
+    // Force multiple accesses to increase chance of UAF detection
+    for (int i = 0; i < 10; i++) {
+      value = Get("key1");
+      value = Get("key2");
+    }
+    fprintf(stderr, "*** MULTIPLE GETS COMPLETED ***\n");
+  }
+
+  // Verify our sync points were hit
+  fprintf(stderr, "*** TABLE ACCESSED AFTER RESET: %d ***\n",
+          table_accessed_after_reset.load() ? 1 : 0);
+  fprintf(stderr, "*** IOPTIONS PTR BEFORE RESET: %p ***\n",
+          cached_table_ptr.load());
+  fprintf(stderr, "*** IOPTIONS PTR AFTER RESET: %p ***\n",
+          accessed_table_ptr.load());
+
+  // Verify we're accessing the SAME ioptions pointer (from cached table)
+  if (cached_table_ptr.load() != nullptr &&
+      accessed_table_ptr.load() != nullptr &&
+      cached_table_ptr.load() == accessed_table_ptr.load()) {
+    fprintf(stderr,
+            "*** CONFIRMED: SAME IOPTIONS PTR - CACHED TABLE REUSED! ***\n");
+  }
+
+  // For the bug to manifest, we need:
+  // 1. Reset() to be called (deletes CFD)
+  // 2. Table access after Reset() (dereferences freed CFD->ioptions)
+  // 3. Same ioptions pointer (cached table reused)
+  if (reset_called.load() && table_accessed_after_reset.load()) {
+    fprintf(stderr, "*** BUG TRIGGERED! UAF SHOULD BE DETECTED BY ASAN ***\n");
+  } else if (!reset_called.load()) {
+    fprintf(stderr,
+            "*** WARNING: Reset() was NOT called - test may not reproduce bug "
+            "***\n");
+  }
+
+  SyncPoint::GetInstance()->DisableProcessing();
+  SyncPoint::GetInstance()->ClearAllCallBacks();
+}
+
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {

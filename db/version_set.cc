@@ -5437,6 +5437,7 @@ VersionSet::~VersionSet() {
 }
 
 void VersionSet::Reset() {
+  TEST_SYNC_POINT("VersionSet::Reset:Start");
   if (column_family_set_) {
     WriteBufferManager* wbm = column_family_set_->write_buffer_manager();
     WriteController* wc = column_family_set_->write_controller();
@@ -6470,6 +6471,7 @@ Status VersionSet::TryRecoverFromOneManifest(
     const std::string& manifest_path,
     const std::vector<ColumnFamilyDescriptor>& column_families, bool read_only,
     std::string* db_id, bool* has_missing_table_file) {
+  TEST_SYNC_POINT("VersionSet::TryRecoverFromOneManifest:Start");
   const ReadOptions read_options(Env::IOActivity::kDBOpen);
   ROCKS_LOG_INFO(db_options_->info_log, "Trying to recover from manifest: %s\n",
                  manifest_path.c_str());

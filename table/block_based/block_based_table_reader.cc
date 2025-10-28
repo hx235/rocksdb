@@ -2517,6 +2517,8 @@ Status BlockBasedTable::Get(const ReadOptions& read_options, const Slice& key,
         read_options.snapshot != nullptr;
   }
   TEST_SYNC_POINT("BlockBasedTable::Get:BeforeFilterMatch");
+  TEST_SYNC_POINT_CALLBACK("BlockBasedTable::Get:AccessIoptions", 
+                           const_cast<ImmutableOptions*>(&rep_->ioptions));
   const bool may_match =
       FullFilterKeyMayMatch(filter, key, prefix_extractor, get_context,
                             &lookup_context, read_options);
