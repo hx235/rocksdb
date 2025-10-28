@@ -11,6 +11,65 @@
 #include "db_stress_tool/db_stress_common.h"
 
 namespace ROCKSDB_NAMESPACE {
+
+// ============================================================================
+// WriteBatch Corruption Injector
+// ============================================================================
+
+namespace {
+
+// Injects corruption into WriteBatch to validate protection mechanism.
+// Minimal implementation: flips one random byte in batch data.
+class WriteBatchCorruptionInjector {
+ public:
+  explicit WriteBatchCorruptionInjector(Random* rand) : rand_(rand) {}
+
+  // Maybe corrupt the batch based on FLAGS_inject_writebatch_corruption_one_in
+  // Returns true if corruption was injected, false otherwise
+  bool MaybeCorrupt(WriteBatch* batch) {
+    if (FLAGS_inject_writebatch_corruption_one_in <= 0 ||
+        !rand_->OneIn(FLAGS_inject_writebatch_corruption_one_in)) {
+      return false;
+    }
+
+    // Get mutable access to batch data
+    std::string& rep = const_cast<std::string&>(batch->Data());
+
+    // WriteBatch format: [12-byte header][entries...]
+    // Don't corrupt header, only entry data
+    if (rep.size() <= 12) {
+      return false;
+    }
+
+    // Corrupt one random byte after header
+    size_t offset = 12 + rand_->Uniform(static_cast<int>(rep.size() - 12));
+
+    // === DEBUG: Log corruption details ===
+    fprintf(
+        stdout,
+        "[INJECTOR] Corrupting batch size=%zu, offset=%zu, old_byte=0x%02x\n",
+        rep.size(), offset, static_cast<unsigned char>(rep[offset]));
+    fflush(stdout);
+
+    rep[offset] ^= 0xFF;  // Flip all bits
+
+    fprintf(stdout, "[INJECTOR] After corruption: new_byte=0x%02x\n",
+            static_cast<unsigned char>(rep[offset]));
+    fflush(stdout);
+
+    return true;
+  }
+
+ private:
+  Random* rand_;
+};
+
+}  // anonymous namespace
+
+// ============================================================================
+// BatchedOpsStressTest Implementation
+// ============================================================================
+
 class BatchedOpsStressTest : public StressTest {
  public:
   BatchedOpsStressTest() = default;
@@ -75,19 +134,136 @@ class BatchedOpsStressTest : public StressTest {
       }
     }
 
-    if (status.ok()) {
-      status = db_->Write(write_opts, &batch);
-    }
-
     if (!status.ok()) {
-      fprintf(stderr, "multiput error: %s\n", status.ToString().c_str());
-      thread->stats.AddErrors(1);
-    } else {
-      // we did 10 writes each of size sz + 1
-      thread->stats.AddBytesForWrites(10, (sz + 1) * 10);
+      return status;
     }
 
-    return status;
+    // Inject corruption: After Put(), Before Write()
+    bool corrupted = false;
+    if (FLAGS_batch_protection_bytes_per_key > 0) {
+      WriteBatchCorruptionInjector injector(&thread->rand);
+      corrupted = injector.MaybeCorrupt(&batch);
+    }
+
+    // Alternate between WAL and memtable-only paths
+    static std::atomic<uint64_t> op_counter{0};
+    uint64_t op_id = op_counter.fetch_add(1);
+    bool test_wal_path = (op_id % 2 == 0);
+
+    WriteOptions write_opts_copy = write_opts;
+    write_opts_copy.disableWAL = !test_wal_path;
+
+    // Execute Write
+    status = db_->Write(write_opts_copy, &batch);
+
+    // Validate: Injected corruption must be detected
+    if (corrupted) {
+      if (!status.IsCorruption()) {
+        fprintf(stderr,
+                "\n"
+                "════════════════════════════════════════════════════\n"
+                "❌ BUG: Injected WriteBatch corruption NOT detected\n"
+                "════════════════════════════════════════════════════\n"
+                "Thread %d, Op %lu: Write() returned %s (expected "
+                "Corruption)\n"
+                "Test path: %s\n"
+                "batch_protection_bytes_per_key=%zu is NOT working!\n"
+                "════════════════════════════════════════════════════\n\n",
+                thread->tid, op_id, status.ToString().c_str(),
+                test_wal_path ? "WAL" : "memtable-only",
+                FLAGS_batch_protection_bytes_per_key);
+        fflush(stderr);
+        thread->shared->SetVerificationFailure();
+        return Status::Corruption(
+            "Injected WriteBatch corruption not detected");
+      }
+
+      // Corruption detected as expected
+      // DB is now in error state - must reopen to continue testing
+      fprintf(stdout,
+              "[Thread %d, Op %lu] ✅ Corruption detected in %s path: %s\n",
+              thread->tid, op_id, test_wal_path ? "write batch" : "memtable",
+              status.ToString().c_str());
+      fflush(stdout);
+
+      // CRITICAL: Reopen DB to verify no persistent corruption
+      Status reopen_status = ReopenAndVerifyClean(thread);
+      if (!reopen_status.ok()) {
+        fprintf(stderr,
+                "\n"
+                "════════════════════════════════════════════════════\n"
+                "❌ FATAL: DB corrupted on disk!\n"
+                "════════════════════════════════════════════════════\n"
+                "Thread %d: Reopen after corruption failed: %s\n"
+                "Corrupted data may have been persisted to %s\n"
+                "════════════════════════════════════════════════════\n\n",
+                thread->tid, reopen_status.ToString().c_str(),
+                test_wal_path ? "WAL" : "memtable");
+        fflush(stderr);
+        thread->shared->SetVerificationFailure();
+        return Status::Corruption("Persistent corruption detected");
+      }
+
+      // Reopen succeeded - DB is clean
+      return Status::OK();  // Expected corruption was caught
+    }
+
+    // No corruption injected - write should succeed
+    if (!status.ok()) {
+      fprintf(stderr, "Thread %d, Op %lu: Unexpected error: %s\n", thread->tid,
+              op_id, status.ToString().c_str());
+      thread->stats.AddErrors(1);
+      return status;
+    }
+
+    // Success
+    thread->stats.AddBytesForWrites(10, (sz + 1) * 10);
+    return Status::OK();
+  }
+
+  // Reopen DB and verify it's clean (no persistent corruption)
+  Status ReopenAndVerifyClean(ThreadState* thread) {
+    // Close current DB
+    {
+      MutexLock l(thread->shared->GetMutex());
+
+      // Close DB by deleting column families
+      for (auto cf : column_families_) {
+        delete cf;
+      }
+      column_families_.clear();
+      delete db_;
+      db_ = nullptr;
+
+      // Reopen DB
+      Open(thread->shared, /* reopen */ true);
+      if (!db_) {
+        return Status::Corruption("Failed to reopen DB");
+      }
+
+      // Verify we can write a clean batch after reopen
+      WriteBatch verify_batch(0, 0, FLAGS_batch_protection_bytes_per_key,
+                              FLAGS_user_timestamp_size);
+      std::string verify_key = Key(thread->rand.Next());
+      std::string verify_value = std::to_string(thread->rand.Next());
+
+      ColumnFamilyHandle* cfh = column_families_[0];
+      Status s = verify_batch.Put(cfh, verify_key, verify_value);
+      if (!s.ok()) {
+        return Status::Corruption("Cannot build batch after reopen: " +
+                                  s.ToString());
+      }
+
+      s = db_->Write(WriteOptions(), &verify_batch);
+      if (!s.ok()) {
+        return Status::Corruption("Cannot write after reopen: " + s.ToString());
+      }
+    }
+
+    fprintf(stdout, "[Thread %d] ✅ DB reopened cleanly after corruption\n",
+            thread->tid);
+    fflush(stdout);
+    return Status::OK();
   }
 
   // Given a key K, this deletes ("0"+K), ("1"+K), ..., ("9"+K)

@@ -1139,6 +1139,12 @@ DEFINE_int32(metadata_write_fault_one_in, 1000,
              "On non-zero, enables fault injection on metadata write (i.e, "
              "directory and file metadata write)");
 
+DEFINE_int32(inject_writebatch_corruption_one_in, 0,
+             "If non-zero, corrupt approximately one in every N WriteBatches "
+             "after operations are added but before Write() is called. "
+             "Only active when batch_protection_bytes_per_key > 0. "
+             "Used to validate that WriteBatch protection detects corruption.");
+
 DEFINE_uint64(user_timestamp_size, 0,
               "Number of bytes for a user-defined timestamp. Currently, only "
               "8-byte is supported");
