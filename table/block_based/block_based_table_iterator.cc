@@ -379,7 +379,8 @@ void BlockBasedTableIterator::InitDataBlock() {
     }
 
     bool is_for_compaction =
-        lookup_context_.caller == TableReaderCaller::kCompaction;
+        (lookup_context_.caller == TableReaderCaller::kCompaction) ||
+        (lookup_context_.caller == TableReaderCaller::kCompactionRefill);
 
     // Initialize Data Block From CacheableEntry.
     if (is_in_cache) {
@@ -437,7 +438,8 @@ void BlockBasedTableIterator::InitDataBlock() {
 void BlockBasedTableIterator::AsyncInitDataBlock(bool is_first_pass) {
   BlockHandle data_block_handle;
   bool is_for_compaction =
-      lookup_context_.caller == TableReaderCaller::kCompaction;
+      (lookup_context_.caller == TableReaderCaller::kCompaction) ||
+      (lookup_context_.caller == TableReaderCaller::kCompactionRefill);
   if (is_first_pass) {
     data_block_handle = index_iter_->value().handle;
     if (!block_iter_points_to_real_block_ ||

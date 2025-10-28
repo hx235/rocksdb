@@ -58,6 +58,22 @@ Env::IOActivity ThreadStatusUtil::TEST_GetExpectedIOActivity(
   }
 }
 
+void ThreadStatusUtil::TEST_SetThreadCompactionReadaheadSize(
+    size_t compaction_readahead_size) {
+  if (thread_updater_local_cache_ == nullptr) {
+    return;
+  }
+  thread_updater_local_cache_->TEST_SetThreadCompactionReadaheadSize(
+      compaction_readahead_size);
+}
+
+size_t ThreadStatusUtil::TEST_GetThreadCompactionReadaheadSize() {
+  if (thread_updater_local_cache_ == nullptr) {
+    return 0;
+  }
+  return thread_updater_local_cache_->TEST_GetThreadCompactionReadaheadSize();
+}
+
 #endif  // !NDEBUG
 
 }  // namespace ROCKSDB_NAMESPACE

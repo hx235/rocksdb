@@ -31,10 +31,37 @@ void ThreadStatusUpdater::TEST_VerifyColumnFamilyInfoMap(
   }
 }
 
+void ThreadStatusUpdater::TEST_SetThreadCompactionReadaheadSize(
+    size_t compaction_readahead_size) {
+  auto* data = GetLocalThreadStatus();
+  if (data == nullptr) {
+    return;
+  }
+  data->compaction_readahead_size.store(compaction_readahead_size,
+                                        std::memory_order_relaxed);
+}
+
+size_t ThreadStatusUpdater::TEST_GetThreadCompactionReadaheadSize() {
+  ThreadStatusData* data = GetLocalThreadStatus();
+  if (data == nullptr) {
+    return 0;
+  }
+  return data->compaction_readahead_size.load(std::memory_order_relaxed);
+}
+
 #else
 
 void ThreadStatusUpdater::TEST_VerifyColumnFamilyInfoMap(
     const std::vector<ColumnFamilyHandle*>& /*handles*/, bool /*check_exist*/) {
+}
+
+void ThreadStatusUpdater::TEST_SetThreadCompactionReadaheadSize(
+    size_t /* compaction_readahead_size */) {
+  return;
+}
+
+size_t ThreadStatusUpdater::TEST_GetThreadCompactionReadaheadSize() {
+  return 0;
 }
 
 #endif  // ROCKSDB_USING_THREAD_STATUS

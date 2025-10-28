@@ -82,6 +82,11 @@ class ThreadStatusUtil {
 
   static Env::IOActivity TEST_GetExpectedIOActivity(
       ThreadStatus::OperationType thread_op);
+
+  static void TEST_SetThreadCompactionReadaheadSize(
+      size_t compaction_readahead_size);
+  static size_t TEST_GetThreadCompactionReadaheadSize();
+
 #endif
 
  protected:

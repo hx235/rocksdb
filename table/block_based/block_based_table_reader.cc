@@ -777,7 +777,7 @@ Status BlockBasedTable::Open(
     s = PrefetchTail(ro, ioptions, file.get(), file_size, force_direct_prefetch,
                      tail_prefetch_stats, prefetch_all, preload_all,
                      &prefetch_buffer, ioptions.stats, tail_size,
-                     ioptions.logger);
+                     env_options.compaction_readahead_size, ioptions.logger);
     // Return error in prefetch path to users.
     if (!s.ok()) {
       return s;
@@ -1008,7 +1008,8 @@ Status BlockBasedTable::PrefetchTail(
     bool force_direct_prefetch, TailPrefetchStats* tail_prefetch_stats,
     const bool prefetch_all, const bool preload_all,
     std::unique_ptr<FilePrefetchBuffer>* prefetch_buffer, Statistics* stats,
-    uint64_t tail_size, Logger* const logger) {
+    uint64_t tail_size, size_t compaction_readahead_size,
+    Logger* const logger) {
   assert(tail_size <= file_size);
 
   size_t tail_prefetch_size = 0;
@@ -1067,6 +1068,18 @@ Status BlockBasedTable::PrefetchTail(
   Status s = file->PrepareIOOptions(ro, opts, &dbg);
   // Try file system prefetch
   if (s.ok() && !file->use_direct_io() && !force_direct_prefetch) {
+    // TODO(hx235): remove this condition to apply sanitization to all file
+    // system prefetching
+    if (ro.io_activity == Env::IOActivity::kCompaction) {
+      prefetch_len = std::min(prefetch_len, compaction_readahead_size);
+      ROCKS_LOG_WARN(
+          logger,
+          "[%s] File system prefetching is utilized for tail prefetching "
+          "during compaction table opening. The actual prefetch length "
+          "parameter is set to %zu to satisfy the constraints imposed on file "
+          "system prefetching call parameters.",
+          file->file_name().c_str(), prefetch_len);
+    }
     if (!file->Prefetch(opts, prefetch_off, prefetch_len).IsNotSupported()) {
       prefetch_buffer->reset(new FilePrefetchBuffer(
           ReadaheadParams(), false /* enable */, true /* track_min_offset */));

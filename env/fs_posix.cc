@@ -947,6 +947,8 @@ class PosixFileSystem : public FileSystem {
     FileOptions fo = FileOptions(file_options);
 #ifdef OS_LINUX
     // To fix https://github.com/facebook/rocksdb/issues/12038
+    // where `compaction_readahead_size` larger than some system limit e.g,
+    // `max_sectors_kb` results in ineffective readahead
     if (!file_options.use_direct_reads &&
         file_options.compaction_readahead_size > 0) {
       size_t system_limit =

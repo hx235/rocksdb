@@ -45,9 +45,9 @@ void BlockPrefetcher::PrefetchIfNeeded(
         return;
       }
       if (rep->fs_prefetch_support) {
-        s = rep->file->Prefetch(opts, offset, len + compaction_readahead_size_);
+        s = rep->file->Prefetch(opts, offset, compaction_readahead_size_);
         if (s.ok()) {
-          readahead_limit_ = offset + len + compaction_readahead_size_;
+          readahead_limit_ = offset + compaction_readahead_size_;
           return;
         } else if (!s.IsNotSupported()) {
           return;
@@ -144,6 +144,17 @@ void BlockPrefetcher::PrefetchIfNeeded(
   IOOptions opts;
   Status s = rep->file->PrepareIOOptions(read_options, opts);
   if (!s.ok()) {
+    return;
+  }
+  // TODO(hx235): Apply sanitization on the length parameter of `Prefetch()`
+  // like in compaction above
+  s = rep->file->Prefetch(
+      opts, handle.offset(),
+      BlockBasedTable::BlockSizeWithTrailer(handle) + readahead_size_);
+  if (s.IsNotSupported()) {
+    rep->CreateFilePrefetchBufferIfNotExists(
+        readahead_params, &prefetch_buffer_, readaheadsize_cb,
+        /*usage=*/FilePrefetchBufferUsage::kUserScanPrefetch);
     return;
   }
 

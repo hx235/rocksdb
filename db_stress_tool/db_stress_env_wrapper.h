@@ -69,6 +69,16 @@ class DbStressRandomAccessFileWrapper : public FSRandomAccessFileOwnerWrapper {
         ThreadStatusUtil::TEST_GetExpectedIOActivity(thread_op);
     assert(io_activity == Env::IOActivity::kUnknown ||
            io_activity == options.io_activity);
+
+    // // If this is a compaction readahead through file system prefetching call
+    // // `Prefetch()`, then `n` should be less than or equal to the compaction
+    // // readahead size tracked in order to satisfy different constraints. See
+    // // `OptimizeForCompactionTableRead()` in fs_posix.cc for more details.
+    // if (options.io_activity == Env::IOActivity::kCompaction) {
+    //   const size_t compaction_readahead_size =
+    //       ThreadStatusUtil::TEST_GetThreadCompactionReadaheadSize();
+    //   assert(n <= compaction_readahead_size);
+    // }
 #endif
     return target()->Prefetch(offset, n, options, dbg);
   }

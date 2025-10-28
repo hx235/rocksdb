@@ -198,6 +198,10 @@ CompactionJob::CompactionJob(
   ThreadStatusUtil::SetEnableTracking(db_options_.enable_thread_tracking);
   ThreadStatusUtil::SetColumnFamily(cfd);
   ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_COMPACTION);
+#ifndef NDEBUG
+  ThreadStatusUtil::TEST_SetThreadCompactionReadaheadSize(
+      file_options_for_read_.compaction_readahead_size);
+#endif
   ReportStartedCompaction(compaction);
 }
 
@@ -837,8 +841,8 @@ Status CompactionJob::VerifyOutputFiles() {
       verify_table_read_options.rate_limiter_priority =
           GetRateLimiterPriority();
       InternalIterator* iter = cfd->table_cache()->NewIterator(
-          verify_table_read_options, file_options_, cfd->internal_comparator(),
-          files_output[file_idx]->meta,
+          verify_table_read_options, file_options_for_read_,
+          cfd->internal_comparator(), files_output[file_idx]->meta,
           /*range_del_agg=*/nullptr, compact_->compaction->mutable_cf_options(),
           /*table_reader_ptr=*/nullptr,
           cfd->internal_stats()->GetFileReadHist(

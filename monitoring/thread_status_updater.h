@@ -70,6 +70,7 @@ struct ThreadStatusData {
     operation_type.store(ThreadStatus::OP_UNKNOWN);
     op_start_time.store(0);
     state_type.store(ThreadStatus::STATE_UNKNOWN);
+    compaction_readahead_size.store(0);
   }
 
   // A flag to indicate whether the thread tracking is enabled
@@ -86,6 +87,7 @@ struct ThreadStatusData {
   std::atomic<ThreadStatus::OperationStage> operation_stage;
   std::atomic<uint64_t> op_properties[ThreadStatus::kNumOperationProperties];
   std::atomic<ThreadStatus::StateType> state_type;
+  std::atomic<size_t> compaction_readahead_size;
 #endif  // ROCKSDB_USING_THREAD_STATUS
 };
 
@@ -188,6 +190,9 @@ class ThreadStatusUpdater {
   // the information stored in the current cf_info_map.
   void TEST_VerifyColumnFamilyInfoMap(
       const std::vector<ColumnFamilyHandle*>& handles, bool check_exist);
+
+  void TEST_SetThreadCompactionReadaheadSize(size_t compaction_readahead_size);
+  size_t TEST_GetThreadCompactionReadaheadSize();
 
  protected:
 #ifdef ROCKSDB_USING_THREAD_STATUS
