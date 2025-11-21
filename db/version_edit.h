@@ -446,6 +446,19 @@ struct LevelFilesBrief {
 // to the MANIFEST file.
 class VersionEdit {
  public:
+  // Retrieve the table files added as well as their associated levels.
+  using NewFiles = std::vector<std::pair<int, FileMetaData>>;
+
+  static void EncodeToNewFile4(const FileMetaData& f, int level, size_t ts_sz,
+                               bool has_min_log_number_to_keep,
+                               uint64_t min_log_number_to_keep,
+                               bool& min_log_num_written, std::string* dst);
+
+  static const char* DecodeNewFile4From(Slice* input, int& max_level,
+                                        uint64_t& min_log_number_to_keep,
+                                        bool& has_min_log_number_to_keep,
+                                        NewFiles& new_files, FileMetaData& f);
+
   void Clear();
 
   void SetDBId(const std::string& db_id) {
@@ -564,8 +577,6 @@ class VersionEdit {
     }
   }
 
-  // Retrieve the table files added as well as their associated levels.
-  using NewFiles = std::vector<std::pair<int, FileMetaData>>;
   const NewFiles& GetNewFiles() const { return new_files_; }
 
   NewFiles& GetMutableNewFiles() { return new_files_; }
@@ -757,15 +768,22 @@ class VersionEdit {
   std::string DebugJSON(int edit_num, bool hex_key = false) const;
 
  private:
-  bool GetLevel(Slice* input, int* level, const char** msg);
-
-  const char* DecodeNewFile4From(Slice* input);
-
+  // Decode level information from serialized VersionEdit data and and track the
+  // maximum level seen.
+  //
+  // Parameters:
+  //   input: Pointer to serialized data slice
+  //   level: Output parameter for the decoded level value
+  //   max_level: get updated if the decoded level is higher than passed in
+  //   value
+  //
+  // Returns: true on successful decode, false on parse error
+  static bool GetLevel(Slice* input, int* level, int& max_level);
   // Encode file boundaries `FileMetaData.smallest` and `FileMetaData.largest`.
   // User-defined timestamps in the user key will be stripped if they shouldn't
   // be persisted.
-  void EncodeFileBoundaries(std::string* dst, const FileMetaData& meta,
-                            size_t ts_sz) const;
+  static void EncodeFileBoundaries(std::string* dst, const FileMetaData& meta,
+                                   size_t ts_sz);
 
   int max_level_ = 0;
   std::string db_id_;
