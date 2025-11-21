@@ -173,6 +173,14 @@ bool VersionEdit::EncodeTo(std::string* dst,
     char p = static_cast<char>(persist_user_defined_timestamps_);
     PutLengthPrefixedSlice(dst, Slice(&p, 1));
   }
+
+  if (HasSubcompactionProgress()) {
+    PutVarint32(dst, kSubcompactionProgress);
+    std::string progress_data;
+    subcompaction_progress_.EncodeTo(&progress_data);
+    PutLengthPrefixedSlice(dst, progress_data);
+  }
+
   return true;
 }
 
@@ -784,6 +792,23 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
         }
         break;
 
+      case kSubcompactionProgress: {
+        Slice encoded;
+        if (!GetLengthPrefixedSlice(&input, &encoded)) {
+          msg = "SubcompactionProgress not prefixed by length";
+          break;
+        }
+
+        SubcompactionProgress progress;
+        Status s = progress.DecodeFrom(&encoded);
+        if (!s.ok()) {
+          return s;
+        }
+
+        SetSubcompactionProgress(progress);
+        break;
+      }
+
       default:
         if (tag & kTagSafeIgnoreMask) {
           // Tag from future which can be safely ignored.
@@ -1104,4 +1129,341 @@ std::string VersionEdit::DebugJSON(int edit_num, bool hex_key) const {
   return jw.Get();
 }
 
+void SubcompactionProgressPerLevel::EncodeTo(std::string* dst) const {
+  if (num_processed_output_records_ > 0) {
+    PutVarint32(
+        dst,
+        SubcompactionProgressPerLevelCustomTag::kNumProcessedOutputRecords);
+    std::string varint_records;
+    PutVarint64(&varint_records, num_processed_output_records_);
+    PutLengthPrefixedSlice(dst, varint_records);
+  }
+
+  if (!output_files_.empty()) {
+    PutVarint32(dst, SubcompactionProgressPerLevelCustomTag::kOutputFilesDelta);
+    std::string files_data;
+    EncodeOutputFiles(&files_data);
+    PutLengthPrefixedSlice(dst, files_data);
+  } else if (!temp_output_files_allocation_.empty()) {
+    PutVarint32(dst, SubcompactionProgressPerLevelCustomTag::kOutputFilesDelta);
+    std::string files_data;
+    EncodeTemporaryOutputFilesAllocation(&files_data);
+    PutLengthPrefixedSlice(dst, files_data);
+  }
+
+  PutVarint32(dst, SubcompactionProgressPerLevelCustomTag::
+                       kSubcompactionProgressPerLevelTerminate);
+}
+
+Status SubcompactionProgressPerLevel::DecodeFrom(Slice* input) {
+  Clear();
+
+  while (true) {
+    uint32_t tag = 0;
+    if (!GetVarint32(input, &tag)) {
+      return Status::Corruption("SubcompactionProgressPerLevel", "tag error");
+    }
+
+    if (tag == SubcompactionProgressPerLevelCustomTag::
+                   kSubcompactionProgressPerLevelTerminate) {
+      break;
+    }
+
+    Slice field;
+    if (!GetLengthPrefixedSlice(input, &field)) {
+      return Status::Corruption("SubcompactionProgressPerLevel",
+                                "field length prefixed slice error");
+    }
+
+    switch (tag) {
+      case SubcompactionProgressPerLevelCustomTag::kNumProcessedOutputRecords: {
+        if (!GetVarint64(&field, &num_processed_output_records_)) {
+          return Status::Corruption("SubcompactionProgressPerLevel",
+                                    "invalid num_processed_output_records_");
+        }
+        break;
+      }
+
+      case SubcompactionProgressPerLevelCustomTag::kOutputFilesDelta: {
+        Status s = DecodeOutputFiles(&field, temp_output_files_allocation_);
+        if (!s.ok()) {
+          return s;
+        }
+        break;
+      }
+
+      default:
+        // Forward compatibility: Handle unknown tags
+        if ((tag & SubcompactionProgressPerLevelCustomTag::
+                       kSubcompactionProgressPerLevelCustomTagSafeIgnoreMask) !=
+            0) {
+          break;
+        } else {
+          return Status::NotSupported("SubcompactionProgress",
+                                      "unsupported critical custom field");
+        }
+    }
+  }
+
+  return Status::OK();
+}
+
+void SubcompactionProgressPerLevel::EncodeOutputFiles(std::string* dst) const {
+  size_t new_files_count =
+      output_files_.size() > last_persisted_output_files_count_
+          ? output_files_.size() - last_persisted_output_files_count_
+          : 0;
+
+  assert(new_files_count > 0);
+
+  PutVarint32(dst, static_cast<uint32_t>(new_files_count));
+
+  for (size_t i = last_persisted_output_files_count_; i < output_files_.size();
+       ++i) {
+    const FileMetaData* file_ptr = output_files_[i];
+    assert(file_ptr != nullptr);
+
+    std::string file_dst;
+    bool ignored_min_log_written = false;
+
+    VersionEdit::EncodeToNewFile4(*file_ptr, -1 /* level */, 0 /* ts_sz */,
+                                  false /* has_min_log_number_to_keep */,
+                                  0 /* min_log_number_to_keep */,
+                                  ignored_min_log_written, &file_dst);
+
+    PutLengthPrefixedSlice(dst, file_dst);
+  }
+}
+
+void SubcompactionProgressPerLevel::EncodeTemporaryOutputFilesAllocation(
+    std::string* dst) const {
+  size_t new_files_count =
+      temp_output_files_allocation_.size() > last_persisted_output_files_count_
+          ? temp_output_files_allocation_.size() -
+                last_persisted_output_files_count_
+          : 0;
+
+  assert(new_files_count > 0);
+
+  PutVarint32(dst, static_cast<uint32_t>(new_files_count));
+
+  for (size_t i = last_persisted_output_files_count_;
+       i < temp_output_files_allocation_.size(); ++i) {
+    const FileMetaData& file = temp_output_files_allocation_[i];
+
+    std::string file_dst;
+    bool ignored_min_log_written = false;
+
+    VersionEdit::EncodeToNewFile4(file, -1 /* level */, 0 /* ts_sz */,
+                                  false /* has_min_log_number_to_keep */,
+                                  0 /* min_log_number_to_keep */,
+                                  ignored_min_log_written, &file_dst);
+
+    PutLengthPrefixedSlice(dst, file_dst);
+  }
+}
+
+Status SubcompactionProgressPerLevel::DecodeOutputFiles(
+    Slice* input, autovector<FileMetaData>& temporary_output_files_allocation) {
+  uint32_t new_file_count = 0;
+  if (!GetVarint32(input, &new_file_count)) {
+    return Status::Corruption("SubcompactionProgressPerLevel",
+                              "new output file count");
+  }
+
+  assert(temporary_output_files_allocation.size() == 0);
+
+  temporary_output_files_allocation.reserve(new_file_count);
+
+  for (uint32_t i = 0; i < new_file_count; ++i) {
+    Slice file_input;
+    if (!GetLengthPrefixedSlice(input, &file_input)) {
+      return Status::Corruption("SubcompactionProgressPerLevel",
+                                "output file metadata");
+    }
+
+    uint32_t tag = 0;
+    if (!GetVarint32(&file_input, &tag) || tag != kNewFile4) {
+      return Status::Corruption("SubcompactionProgressPerLevel",
+                                "expected kNewFile4 tag");
+    }
+
+    int ignored_max_level = -1;
+    uint64_t ignored_min_log_number_to_keep = 0;
+    bool ignored_has_min_log_number_to_keep = false;
+    VersionEdit::NewFiles ignored_new_files;
+    FileMetaData file;
+
+    const char* err = VersionEdit::DecodeNewFile4From(
+        &file_input, ignored_max_level, ignored_min_log_number_to_keep,
+        ignored_has_min_log_number_to_keep, ignored_new_files, file);
+
+    if (err != nullptr) {
+      return Status::Corruption("SubcompactionProgressPerLevel", err);
+    }
+
+    temporary_output_files_allocation.push_back(std::move(file));
+  }
+
+  return Status::OK();
+}
+
+void SubcompactionProgress::EncodeTo(std::string* dst) const {
+  if (!next_internal_key_to_compact.empty()) {
+    PutVarint32(dst, SubcompactionProgressCustomTag::kNextInternalKeyToCompact);
+    PutLengthPrefixedSlice(dst, next_internal_key_to_compact);
+  }
+
+  if (num_processed_input_records > 0) {
+    PutVarint32(dst, SubcompactionProgressCustomTag::kNumProcessedInputRecords);
+    std::string varint_records;
+    PutVarint64(&varint_records, num_processed_input_records);
+    PutLengthPrefixedSlice(dst, varint_records);
+  }
+
+  if (output_level_progress.GetOutputFiles().size() >
+      output_level_progress.GetLastPersistedOutputFilesCount()) {
+    PutVarint32(dst, SubcompactionProgressCustomTag::kOutputLevelProgress);
+    std::string level_progress_data;
+    output_level_progress.EncodeTo(&level_progress_data);
+    PutLengthPrefixedSlice(dst, level_progress_data);
+  }
+
+  if (proximal_output_level_progress.GetOutputFiles().size() >
+      proximal_output_level_progress.GetLastPersistedOutputFilesCount()) {
+    PutVarint32(dst,
+                SubcompactionProgressCustomTag::kProximalOutputLevelProgress);
+    std::string level_progress_data;
+    proximal_output_level_progress.EncodeTo(&level_progress_data);
+    PutLengthPrefixedSlice(dst, level_progress_data);
+  }
+  PutVarint32(dst,
+              SubcompactionProgressCustomTag::kSubcompactionProgressTerminate);
+}
+
+Status SubcompactionProgress::DecodeFrom(Slice* input) {
+  Clear();
+
+  while (true) {
+    uint32_t custom_tag = 0;
+    if (!GetVarint32(input, &custom_tag)) {
+      return Status::Corruption("SubcompactionProgress",
+                                "custom field tag error");
+    }
+
+    if (custom_tag ==
+        SubcompactionProgressCustomTag::kSubcompactionProgressTerminate) {
+      break;
+    }
+
+    Slice field;
+    if (!GetLengthPrefixedSlice(input, &field)) {
+      return Status::Corruption("SubcompactionProgress",
+                                "custom field length prefixed slice error");
+    }
+
+    switch (custom_tag) {
+      case SubcompactionProgressCustomTag::kNextInternalKeyToCompact:
+        next_internal_key_to_compact = field.ToString();
+        break;
+
+      case SubcompactionProgressCustomTag::kNumProcessedInputRecords:
+        if (!GetVarint64(&field, &num_processed_input_records)) {
+          return Status::Corruption("SubcompactionProgress",
+                                    "invalid num_processed_input_records");
+        }
+        break;
+
+      case SubcompactionProgressCustomTag::kOutputLevelProgress: {
+        Status s = output_level_progress.DecodeFrom(&field);
+        if (!s.ok()) {
+          return s;
+        }
+        break;
+      }
+
+      case SubcompactionProgressCustomTag::kProximalOutputLevelProgress: {
+        Status s = proximal_output_level_progress.DecodeFrom(&field);
+        if (!s.ok()) {
+          return s;
+        }
+        break;
+      }
+
+      default:
+        if ((custom_tag & SubcompactionProgressCustomTag::
+                              kSubcompactionProgressCustomTagSafeIgnoreMask) !=
+            0) {
+          break;
+        } else {
+          return Status::NotSupported("SubcompactionProgress",
+                                      "unsupported critical custom field");
+        }
+    }
+  }
+
+  return Status::OK();
+}
+
+bool SubcompactionProgressBuilder::ProcessVersionEdit(const VersionEdit& edit) {
+  if (!edit.HasSubcompactionProgress()) {
+    return false;
+  }
+
+  const SubcompactionProgress& progress = edit.GetSubcompactionProgress();
+
+  MergeDeltaProgress(progress);
+
+  has_subcompaction_progress_ = true;
+
+  return true;
+}
+
+void SubcompactionProgressBuilder::MergeDeltaProgress(
+    const SubcompactionProgress& delta_progress) {
+  accumulated_subcompaction_progress_.next_internal_key_to_compact =
+      delta_progress.next_internal_key_to_compact;
+
+  accumulated_subcompaction_progress_.num_processed_input_records =
+      delta_progress.num_processed_input_records;
+
+  MaybeMergeDeltaProgressPerLevel(
+      accumulated_subcompaction_progress_.output_level_progress,
+      delta_progress.output_level_progress);
+
+  MaybeMergeDeltaProgressPerLevel(
+      accumulated_subcompaction_progress_.proximal_output_level_progress,
+      delta_progress.proximal_output_level_progress);
+}
+
+void SubcompactionProgressBuilder::MaybeMergeDeltaProgressPerLevel(
+    SubcompactionProgressPerLevel& accumulated_level_progress,
+    const SubcompactionProgressPerLevel& delta_level_progress) {
+  assert(delta_level_progress.GetOutputFiles().empty());
+
+  if (delta_level_progress.GetTempOutputFilesAllocation().empty()) {
+    return;
+  }
+
+  accumulated_level_progress.SetNumProcessedOutputRecords(
+      delta_level_progress.GetNumProcessedOutputRecords());
+
+  auto& accumulated_temp_files =
+      accumulated_level_progress.TempOutputFilesAllocation();
+
+  const auto& delta_temp_files =
+      delta_level_progress.GetTempOutputFilesAllocation();
+
+  accumulated_temp_files.reserve(accumulated_temp_files.size() +
+                                 delta_temp_files.size());
+
+  for (const auto& file_allocation : delta_temp_files) {
+    accumulated_temp_files.push_back(file_allocation);
+  }
+}
+
+void SubcompactionProgressBuilder::Clear() {
+  accumulated_subcompaction_progress_.Clear();
+  has_subcompaction_progress_ = false;
+}
 }  // namespace ROCKSDB_NAMESPACE
