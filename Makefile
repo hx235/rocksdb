@@ -1614,7 +1614,7 @@ compaction_job_test: $(OBJ_DIR)/db/compaction/compaction_job_test.o $(TEST_LIBRA
 compaction_job_stats_test: $(OBJ_DIR)/db/compaction/compaction_job_stats_test.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 
-compaction_service_test: $(OBJ_DIR)/db/compaction/compaction_service_test.o $(TEST_LIBRARY) $(LIBRARY)
+compaction_service_test: $(OBJ_DIR)/db/compaction/compaction_service_test.o $(OBJ_DIR)/db_stress_tool/db_stress_compression_manager.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 
 compact_for_tiering_collector_test: $(OBJ_DIR)/utilities/table_properties_collectors/compact_for_tiering_collector_test.o $(TEST_LIBRARY) $(LIBRARY)

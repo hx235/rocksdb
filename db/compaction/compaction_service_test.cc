@@ -4,6 +4,7 @@
 //  (found in the LICENSE.Apache file in the root directory).
 
 #include "db/db_test_util.h"
+#include "db_stress_tool/db_stress_compression_manager.h"
 #include "file/file_util.h"
 #include "port/stack_trace.h"
 #include "rocksdb/utilities/options_util.h"
@@ -22,11 +23,13 @@ class MyTestCompactionService : public CompactionService {
           table_properties_collector_factories)
       : db_path_(std::move(db_path)),
         statistics_(statistics),
-        options_(options),
+
         start_info_("na", "na", "na", 0, "na", 0, Env::TOTAL,
                     CompactionReason::kUnknown, false, false, false, -1, -1),
+
         wait_info_("na", "na", "na", 0, "na", 0, Env::TOTAL,
                    CompactionReason::kUnknown, false, false, false, -1, -1),
+        options_(options),
         listeners_(std::move(listeners)),
         table_properties_collector_factories_(
             std::move(table_properties_collector_factories)) {}
@@ -179,14 +182,16 @@ class MyTestCompactionService : public CompactionService {
     return db_path_ + "/" + scheduled_job_id;
   }
 
- private:
   std::atomic_int compaction_num_{0};
-  Options options_;
   CompactionServiceJobInfo start_info_;
   CompactionServiceJobInfo wait_info_;
   bool is_override_start_status_ = false;
   CompactionServiceJobStatus override_start_status_ =
       CompactionServiceJobStatus::kFailure;
+  std::atomic_bool canceled_{false};
+
+ private:
+  Options options_;
   bool is_override_wait_status_ = false;
   CompactionServiceJobStatus override_wait_status_ =
       CompactionServiceJobStatus::kFailure;
@@ -195,7 +200,6 @@ class MyTestCompactionService : public CompactionService {
   std::vector<std::shared_ptr<EventListener>> listeners_;
   std::vector<std::shared_ptr<TablePropertiesCollectorFactory>>
       table_properties_collector_factories_;
-  std::atomic_bool canceled_{false};
   std::atomic<CompactionServiceJobStatus> final_updated_status_{
       CompactionServiceJobStatus::kUseLocal};
 };
@@ -2431,6 +2435,225 @@ TEST_F(ResumableCompactionServiceTest,
        CompactionMultipleCancelToggleResumption) {
   RunCompactionCancelTest(ResumableCompactionService::TestScenario::
                               kMultipleCancelToggleResumption);
+}
+
+// Compaction service for testing cancel and resume on existing databases
+// with target key-based cancellation and per-key file cut on resume
+class ExistingDbResumableCompactionService : public MyTestCompactionService {
+ public:
+  ExistingDbResumableCompactionService(const std::string& db_path,
+                                       Options& options,
+                                       std::shared_ptr<Statistics> statistics,
+                                       const std::string& cancel_key_hex)
+      : MyTestCompactionService(db_path, options, statistics, {}, {}),
+        cancel_key_hex_(cancel_key_hex) {}
+
+  CompactionServiceScheduleResponse Schedule(
+      const CompactionServiceJobInfo& info,
+      const std::string& compaction_service_input) override {
+    InstrumentedMutexLock l(&mutex_);
+    start_info_ = info;
+    std::string unique_id = Env::Default()->GenerateUniqueId();
+    jobs_.emplace(unique_id, compaction_service_input);
+    infos_.emplace(unique_id, info);
+    return CompactionServiceScheduleResponse(
+        unique_id, is_override_start_status_
+                       ? override_start_status_
+                       : CompactionServiceJobStatus::kSuccess);
+  }
+
+  CompactionServiceJobStatus Wait(const std::string& scheduled_job_id,
+                                  std::string* result) override {
+    std::string compaction_input;
+    {
+      InstrumentedMutexLock l(&mutex_);
+      auto it = jobs_.find(scheduled_job_id);
+      if (it == jobs_.end()) return CompactionServiceJobStatus::kFailure;
+      compaction_input = std::move(it->second);
+      jobs_.erase(it);
+
+      auto info_it = infos_.find(scheduled_job_id);
+      if (info_it == infos_.end()) return CompactionServiceJobStatus::kFailure;
+      wait_info_ = std::move(info_it->second);
+      infos_.erase(info_it);
+    }
+
+    auto override_options = GetOptionsOverride();
+    std::string output_path = GetOutputPath(scheduled_job_id);
+
+    // Phase 1: Run until target key, then cancel
+    SetupTargetKeyCancellation();
+
+    OpenAndCompactOptions opts;
+    opts.canceled = &canceled_;
+    opts.allow_resumption = true;
+
+    std::string phase1_result;
+    Status s = DB::OpenAndCompact(opts, db_path_, output_path, compaction_input,
+                                  &phase1_result, override_options);
+
+    // Phase 2: Resume with per-key file cut
+    SyncPoint::GetInstance()->ClearCallBack(
+        "CompactionOutputs::ShouldStopBefore::manual_decision");
+    SetupFileCutAfterFirstFewKeys();
+
+    canceled_ = false;
+    s = DB::OpenAndCompact(opts, db_path_, output_path, compaction_input,
+                           result, override_options);
+
+    SyncPoint::GetInstance()->DisableProcessing();
+    SyncPoint::GetInstance()->ClearAllCallBacks();
+
+    {
+      InstrumentedMutexLock l(&mutex_);
+      result_ = *result;
+    }
+    compaction_num_.fetch_add(1);
+
+    return s.ok() ? CompactionServiceJobStatus::kSuccess
+                  : CompactionServiceJobStatus::kFailure;
+  }
+
+ private:
+  void SetupTargetKeyCancellation() {
+    SyncPoint::GetInstance()->SetCallBack(
+        "CompactionOutputs::ShouldStopBefore::manual_decision", [&](void* p) {
+          auto* pair = static_cast<std::pair<bool*, const Slice>*>(p);
+          ParsedInternalKey ikey;
+          if (!ParseInternalKey(pair->second, &ikey, false).ok()) return;
+
+          std::string key_hex = ikey.user_key.ToString(true);
+          if (key_hex.find(cancel_key_hex_) != std::string::npos) {
+            *(pair->first) = true;
+            canceled_ = true;
+          }
+        });
+    SyncPoint::GetInstance()->EnableProcessing();
+  }
+
+  void SetupFileCutAfterFirstFewKeys() {
+    int count = 0;
+    SyncPoint::GetInstance()->SetCallBack(
+        "CompactionOutputs::ShouldStopBefore::manual_decision", [&](void* p) {
+          if (count < 20) {
+            auto* pair = static_cast<std::pair<bool*, const Slice>*>(p);
+            *(pair->first) = true;
+            count++;
+          }
+        });
+  }
+
+  std::string cancel_key_hex_;
+};
+
+// This test reproduces an assertion failure in resumable compaction when
+// handling truncated range deletions with kMaxValid type.
+//
+// Bug Background:
+// ===============
+// 1. CompactionIterator can output truncated range deletions with type
+//    kMaxValid instead of kTypeRangeDeletion to satisfy ordering requirements
+//    between the truncated range deletion start key and a file's point keys.
+//
+// 2. Resumable compaction was not correctly treating kMaxValid the same as
+//    kTypeRangeDeletion, mistakenly allowing resumption from a delete range
+//    with kMaxValid type.
+//
+// 3. When compaction resumed from such a key and then needed to cut an output
+//    file shortly after (without any point keys in between), it triggered:
+//    Assertion `meta.smallest.size() > 0' failed in AddRangeDels()
+//    because the code lacked information to complaining about lacking
+//    information to update file boundaries in the presence of range deletion.
+//
+// How to Trigger the Bug:
+// =======================
+// The bug requires a specific sequence of events:
+// 1. Compaction input files must contain range deletions that get truncated
+//    at file boundaries, causing kMaxValid type to be emitted.
+//
+// 2. The compaction must cut the file before and be canceled (via
+//    SetupTargetKeyCancellation) at a
+//    point where the resumption key would be a kMaxValid range deletion.
+//    Here we cancel at key "00000000000000090000000000000003787878" which
+//    triggers this scenario.
+//
+// 3. When compaction resumes from this invalid resumption point and needs to
+//    cut an output file shortly after, the assertion fails.
+//
+// The Fix (commit 842d66e):
+// =========================
+// Prevent kMaxValid from being a valid resumption point, treating it the same
+// as kTypeRangeDeletion for resumption purposes.
+//
+// Note: The test uses a pre-existing LSM state from stress testing because
+// coercing a truncated range deletion from scratch is non-trivial and left as
+// a follow up work.
+TEST_F(ResumableCompactionServiceTest,
+       CompactSpecificFilesFromExistingDBWithCancelAndResume) {
+  DbStressCustomCompressionManager::Register();
+
+  // Setup: Copy source database to destination
+  const std::string source_dir =
+      "/data/users/huixiao/rocksdb/del_assertion_failure_dev";
+  const std::string dest_dir =
+      "/data/users/huixiao/rocksdb/del_assertion_failure_dev_2";
+  const std::string existing_db_path =
+      dest_dir + "/shm/rocksdb_test/rocksdb_crashtest_blackbox";
+
+  if (Env::Default()->FileExists(dest_dir).ok()) {
+    ASSERT_EQ(0, std::system(("rm -rf " + dest_dir).c_str()));
+  }
+  ASSERT_EQ(0, std::system(("cp -rf " + source_dir + " " + dest_dir).c_str()));
+
+  // Setup options and compaction service
+  // Splitting the file by this key will trigger truncated range deletion that
+  // surfaces the bug
+  const std::string kCancelKey = "00000000000000090000000000000003787878";
+  Options options = CurrentOptions();
+  options.disable_auto_compactions = true;
+
+  auto my_cs = std::make_shared<ExistingDbResumableCompactionService>(
+      existing_db_path, options, CreateDBStatistics(), kCancelKey);
+  options.compaction_service = my_cs;
+
+  // Open database
+  DB* db_ptr = nullptr;
+  ASSERT_OK(DB::Open(options, existing_db_path, &db_ptr));
+  std::unique_ptr<DB> db(db_ptr);
+
+  // Find output level for target files
+  std::vector<std::string> files_to_compact = {
+      existing_db_path + "/109590.sst", existing_db_path + "/109404.sst",
+      existing_db_path + "/109405.sst"};
+
+  ColumnFamilyMetaData cf_meta;
+  db->GetColumnFamilyMetaData(&cf_meta);
+
+  int input_level = -1, output_level = -1;
+  for (const auto& level : cf_meta.levels) {
+    for (const auto& file : level.files) {
+      bool matches =
+          std::any_of(files_to_compact.begin(), files_to_compact.end(),
+                      [&](const auto& target) {
+                        return target.find(file.name) != std::string::npos;
+                      });
+      if (matches) {
+        input_level = level.level;
+        output_level = std::min(input_level + 1,
+                                static_cast<int>(cf_meta.levels.size()) - 1);
+        break;
+      }
+    }
+    if (input_level != -1) {
+      break;
+    }
+  }
+  ASSERT_GE(input_level, 0) << "Target files not found";
+
+  // Run compaction - triggers assertion failure when the bug of resumable
+  // compaction allowing resumption from a range delete exists
+  ASSERT_OK(
+      db->CompactFiles(CompactionOptions(), files_to_compact, output_level));
 }
 }  // namespace ROCKSDB_NAMESPACE
 
