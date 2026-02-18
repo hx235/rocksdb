@@ -1475,6 +1475,9 @@ db_kv_checksum_test: $(OBJ_DIR)/db/db_kv_checksum_test.o $(TEST_LIBRARY) $(LIBRA
 db_memtable_test: $(OBJ_DIR)/db/db_memtable_test.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 
+db_cpu_sdc_test: $(OBJ_DIR)/db/db_cpu_sdc_test.o $(TEST_LIBRARY) $(LIBRARY)
+	$(AM_LINK)
+
 db_merge_operator_test: $(OBJ_DIR)/db/db_merge_operator_test.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 

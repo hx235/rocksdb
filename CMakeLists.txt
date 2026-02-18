@@ -1395,6 +1395,7 @@ if(WITH_TESTS)
         db/db_iterator_test.cc
         db/db_kv_checksum_test.cc
         db/db_log_iter_test.cc
+        db/db_cpu_sdc_test.cc
         db/db_memtable_test.cc
         db/db_merge_operator_test.cc
         db/db_merge_operand_test.cc
