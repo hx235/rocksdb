@@ -676,6 +676,19 @@ void IndexBlockIter::SeekToLastImpl() {
 template <class TValue>
 template <typename DecodeEntryFunc>
 bool BlockIter<TValue>::ParseNextKey(bool* is_shared) {
+#ifndef NDEBUG
+  // Reset saved offset from previous SDC injection so NextEntryOffset()
+  // computes from the real (restored by new ParseNextKey) value_.
+  sdc_saved_next_entry_offset = 0;
+  // After SDC injection triggers PerKVChecksumCorruptionError(), status_ is set
+  // to Corruption and current_ to restarts_ (making Valid() false).  The caller
+  // observes the error, but when the iterator is re-seeked, SeekToRestartPoint
+  // does not clear status_.  Clear it here so the iterator can function normally
+  // for subsequent operations — the corruption has already been reported.
+  if (sdc_skip_block_valid_assert && !status_.ok()) {
+    status_ = Status::OK();
+  }
+#endif
   current_ = NextEntryOffset();
   const char* p = data_ + current_;
   const char* limit = data_ + restarts_;  // Restarts come right after data

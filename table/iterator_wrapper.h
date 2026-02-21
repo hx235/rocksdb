@@ -207,7 +207,7 @@ class IteratorWrapperBase {
   void Update() {
     valid_ = iter_->Valid();
     if (valid_) {
-      assert(iter_->status().ok());
+      assert(sdc_skip_block_valid_assert || iter_->status().ok());
       result_.key = iter_->key();
       result_.bound_check_result = IterBoundCheck::kUnknown;
       result_.value_prepared = false;

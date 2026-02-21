@@ -12,6 +12,7 @@
 
 #include "db_stress_tool/db_stress_stat.h"
 #include "db_stress_tool/expected_state.h"
+#include "util/coding.h"
 // SyncPoint is not supported in Released Windows Mode.
 #if !(defined NDEBUG) || !defined(OS_WIN)
 #include "test_util/sync_point.h"
@@ -45,10 +46,41 @@ DECLARE_int32(open_write_fault_one_in);
 DECLARE_int32(open_read_fault_one_in);
 
 DECLARE_int32(inject_error_severity);
+DECLARE_int32(inject_memtable_seek_corruption_one_in);
+DECLARE_int32(inject_block_decode_corruption_one_in);
 DECLARE_bool(disable_auto_compactions);
 DECLARE_bool(enable_compaction_filter);
 
 namespace ROCKSDB_NAMESPACE {
+
+// Thread-local flag: true only during TestGet()/TestMultiGet()/TestIterate()
+// calls.  Ensures no corruption during DB::Open(), compaction, or other
+// internal ops.
+inline thread_local bool sdc_injection_active = false;
+
+// Shared SDC injection helper: gate check (sdc_injection_active + random).
+// Returns true if corruption should be injected this time.
+inline bool ShouldInjectSDC(int one_in_n) {
+  if (!sdc_injection_active) return false;
+  thread_local Random tl_rng(static_cast<uint32_t>(
+      std::hash<std::thread::id>{}(std::this_thread::get_id())));
+  return tl_rng.OneIn(one_in_n);
+}
+
+// Shared SDC injection helper: copy-based Slice corruption.
+// Copies data to thread-local buffer, flips one bit, redirects Slice.
+// Original data is NOT modified — safe for concurrent readers.
+inline bool CorruptSliceViaCopy(Slice* val) {
+  if (val->size() == 0) return false;
+  thread_local std::string tl_buf;
+  thread_local Random tl_rng(static_cast<uint32_t>(
+      std::hash<std::thread::id>{}(std::this_thread::get_id())));
+  tl_buf.assign(val->data(), val->size());
+  tl_buf[tl_rng.Next() % tl_buf.size()] ^= 0x1;
+  *val = Slice(tl_buf.data(), tl_buf.size());
+  return true;
+}
+
 class StressTest;
 
 struct RemoteCompactionQueueItem {
@@ -155,6 +187,83 @@ class SharedState {
     for (int i = 0; i < FLAGS_column_families; ++i) {
       key_locks_[i].reset(new port::Mutex[num_locks]);
     }
+#ifndef NDEBUG
+    if (FLAGS_inject_memtable_seek_corruption_one_in > 0) {
+      SyncPoint::GetInstance()->SetCallBack(
+          "InlineSkipList::FindGreaterOrEqual:BeforeKeyCompare", [](void* arg) {
+            if (!ShouldInjectSDC(
+                    FLAGS_inject_memtable_seek_corruption_one_in)) {
+              return;
+            }
+            const char** key_ptr = static_cast<const char**>(arg);
+            const char* original_key = *key_ptr;
+            if (original_key == nullptr) {
+              return;
+            }
+            // Parse full entry:
+            // [varint(key_len)][key][varint(val_len)][val][checksum]
+            const char* p = original_key;
+            uint32_t key_length = 0;
+            p = GetVarint32Ptr(p, p + 5, &key_length);
+            if (p == nullptr || key_length == 0) {
+              return;
+            }
+            const char* after_key = p + key_length;
+            uint32_t value_length = 0;
+            const char* value_ptr =
+                GetVarint32Ptr(after_key, after_key + 5, &value_length);
+            if (value_ptr == nullptr) {
+              return;
+            }
+            // checksum sits right after value; size = protection_bytes_per_key
+            // Copy generously: up to 8 bytes of checksum (max protection size)
+            const char* end_ptr = value_ptr + value_length + 8;
+            thread_local std::string tl_buf;
+            size_t total_len = static_cast<size_t>(end_ptr - original_key);
+            tl_buf.assign(original_key, total_len);
+            // Flip one bit in the key portion (after varint prefix)
+            thread_local Random tl_rng(static_cast<uint32_t>(
+                std::hash<std::thread::id>{}(std::this_thread::get_id())));
+            size_t varint_len = static_cast<size_t>(p - original_key);
+            size_t corrupt_offset = varint_len + (tl_rng.Next() % key_length);
+            tl_buf[corrupt_offset] ^= 0x1;
+            *key_ptr = tl_buf.data();
+            sdc_skip_skiplist_assert = true;
+          });
+      SyncPoint::GetInstance()->EnableProcessing();
+      fprintf(stdout,
+              "Memtable seek corruption injection enabled (one_in=%d)\n",
+              FLAGS_inject_memtable_seek_corruption_one_in);
+    }
+
+    if (FLAGS_inject_block_decode_corruption_one_in > 0) {
+      // Corrupt value_ after key is set, before checksum verification.
+      // The sync point arg is a struct {Slice* value, uint32_t offset}
+      // where offset is the correct NextEntryOffset computed BEFORE
+      // corruption, so iterator navigation is not disrupted.
+      SyncPoint::GetInstance()->SetCallBack(
+          "BlockIter::UpdateKey::corrupt_value", [](void* arg) {
+            if (!ShouldInjectSDC(
+                    FLAGS_inject_block_decode_corruption_one_in)) {
+              return;
+            }
+            struct SDCCorruptArg {
+              Slice* value;
+              uint32_t next_entry_offset;
+            };
+            auto* sdc_arg = static_cast<SDCCorruptArg*>(arg);
+            // Save the correct offset so NextEntryOffset() can use it
+            // while value_ points to the corrupt thread-local copy.
+            sdc_saved_next_entry_offset = sdc_arg->next_entry_offset;
+            sdc_skip_block_valid_assert = true;
+            CorruptSliceViaCopy(sdc_arg->value);
+          });
+      SyncPoint::GetInstance()->EnableProcessing();
+      fprintf(stdout,
+              "Block decode corruption injection enabled (one_in=%d)\n",
+              FLAGS_inject_block_decode_corruption_one_in);
+    }
+#endif  // NDEBUG
     if (FLAGS_read_fault_one_in || FLAGS_metadata_read_fault_one_in) {
 #ifdef NDEBUG
       // Unsupported in release mode because it relies on
@@ -175,7 +284,9 @@ class SharedState {
   ~SharedState() {
 #ifndef NDEBUG
     if (FLAGS_read_fault_one_in || FLAGS_write_fault_one_in ||
-        FLAGS_metadata_write_fault_one_in) {
+        FLAGS_metadata_write_fault_one_in ||
+        FLAGS_inject_memtable_seek_corruption_one_in ||
+        FLAGS_inject_block_decode_corruption_one_in) {
       SyncPoint::GetInstance()->ClearAllCallBacks();
       SyncPoint::GetInstance()->DisableProcessing();
     }

@@ -1632,8 +1632,11 @@ Status StressTest::TestIterate(ThreadState* thread,
     return true;
   };
 
-  return TestIterateImpl<Iterator>(thread, read_opts, rand_column_families,
-                                   rand_keys, new_iter_func, verify_func);
+  sdc_injection_active = true;
+  Status s = TestIterateImpl<Iterator>(thread, read_opts, rand_column_families,
+                                       rand_keys, new_iter_func, verify_func);
+  sdc_injection_active = false;
+  return s;
 }
 
 Status StressTest::TestIterateAttributeGroups(
@@ -1994,6 +1997,7 @@ Status StressTest::TestIterateImpl(ThreadState* thread,
     }
 
     LastIterateOp last_op;
+    sdc_injection_active = true;
     if (support_seek_first_or_last && thread->rand.OneIn(100)) {
       iter->SeekToFirst();
       cmp_iter->SeekToFirst();
@@ -2026,10 +2030,32 @@ Status StressTest::TestIterateImpl(ThreadState* thread,
     }
 
     if (!iter->status().ok() && IsErrorInjectedAndRetryable(iter->status())) {
+      sdc_injection_active = false;
       return iter->status();
     } else if (!cmp_iter->status().ok() &&
                IsErrorInjectedAndRetryable(cmp_iter->status())) {
+      sdc_injection_active = false;
       return cmp_iter->status();
+    }
+
+    // Handle SDC injection causing corruption status on either iterator
+    if ((iter->status().IsCorruption() || cmp_iter->status().IsCorruption()) &&
+        (FLAGS_inject_memtable_seek_corruption_one_in > 0 ||
+         FLAGS_inject_block_decode_corruption_one_in > 0)) {
+      if (iter->status().IsCorruption()) {
+        fprintf(stdout,
+                "SDC injection detected by protection in Iterator Seek: %s\n",
+                iter->status().ToString().c_str());
+      }
+      if (cmp_iter->status().IsCorruption()) {
+        fprintf(stdout,
+                "SDC injection detected by protection in cmp_iter Seek: %s\n",
+                cmp_iter->status().ToString().c_str());
+      }
+      sdc_injection_active = false;
+      thread->stats.AddIterations(1);
+      op_logs += "; ";
+      continue;
     }
 
     VerifyIterator(thread, cmp_cfh, ro, iter.get(), cmp_iter.get(), last_op,
@@ -2066,15 +2092,39 @@ Status StressTest::TestIterateImpl(ThreadState* thread,
       }
 
       if (!iter->status().ok() && IsErrorInjectedAndRetryable(iter->status())) {
+        sdc_injection_active = false;
         return iter->status();
       } else if (!cmp_iter->status().ok() &&
                  IsErrorInjectedAndRetryable(cmp_iter->status())) {
+        sdc_injection_active = false;
         return cmp_iter->status();
+      }
+
+      // Handle SDC injection causing corruption status during Next/Prev
+      if ((iter->status().IsCorruption() ||
+           cmp_iter->status().IsCorruption()) &&
+          (FLAGS_inject_memtable_seek_corruption_one_in > 0 ||
+           FLAGS_inject_block_decode_corruption_one_in > 0)) {
+        if (iter->status().IsCorruption()) {
+          fprintf(
+              stdout,
+              "SDC injection detected by protection in Iterator Next/Prev: "
+              "%s\n",
+              iter->status().ToString().c_str());
+        }
+        if (cmp_iter->status().IsCorruption()) {
+          fprintf(stdout,
+                  "SDC injection detected by protection in cmp_iter "
+                  "Next/Prev: %s\n",
+                  cmp_iter->status().ToString().c_str());
+        }
+        break;
       }
 
       VerifyIterator(thread, cmp_cfh, ro, iter.get(), cmp_iter.get(), last_op,
                      key, op_logs, verify_func, &diverged);
     }
+    sdc_injection_active = false;
 
     thread->stats.AddIterations(1);
 

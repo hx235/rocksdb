@@ -1196,6 +1196,15 @@ DEFINE_int32(inject_error_severity, 1,
              "The severity of the injected IO Error. 1 is soft error (e.g. "
              "retryable error), 2 is fatal error, and the default is "
              "retryable error.");
+DEFINE_int32(inject_memtable_seek_corruption_one_in, 0,
+             "If non-zero, inject a bit-flip into a thread-local copy of a "
+             "memtable key during seek, one in N comparisons. "
+             "Simulates SEV S540528. Does not modify actual memtable data.");
+DEFINE_int32(inject_block_decode_corruption_one_in, 0,
+             "If non-zero, inject a bit-flip into a thread-local copy of a "
+             "block iterator value during ParseNextKey, one in N calls. "
+             "Models CPU ALU error during block decoding. Does not modify "
+             "actual block data.");
 DEFINE_int32(prepopulate_block_cache,
              static_cast<int32_t>(ROCKSDB_NAMESPACE::BlockBasedTableOptions::
                                       PrepopulateBlockCache::kDisable),

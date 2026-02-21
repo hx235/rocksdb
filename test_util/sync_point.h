@@ -147,6 +147,25 @@ class SyncPoint {
 // Sets up sync points to mock direct IO instead of actually issuing direct IO
 // to the file system.
 void SetupSyncPointsToMockDirectIO();
+
+// When true, skip SkipList invariant asserts to allow injected corruption
+// to flow through silently (as it would in release/production builds).
+// Only set by SDC injection callbacks in db_stress.
+inline thread_local bool sdc_skip_skiplist_assert = false;
+
+// When non-zero, BlockIter::NextEntryOffset() returns this value instead of
+// computing from value_.  Set by SDC block injection when value_ has been
+// redirected to a thread-local corrupt copy.  Reset at the start of
+// ParseNextKey before the offset is consumed.
+inline thread_local uint32_t sdc_saved_next_entry_offset = 0;
+
+// When true, skip BlockIter::Valid() assertion that checks status_.ok() ||
+// current_ >= restarts_.  SDC injection can set status_ to Corruption in
+// UpdateKey() via PerKVChecksumCorruptionError(), but the iterator may be
+// re-seeked before the status propagates, leaving current_ < restarts_
+// with a non-OK status temporarily.
+inline thread_local bool sdc_skip_block_valid_assert = false;
+
 }  // namespace ROCKSDB_NAMESPACE
 
 // Use TEST_SYNC_POINT to specify sync points inside code base.

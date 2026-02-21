@@ -561,27 +561,34 @@ Status InlineSkipList<Comparator>::FindGreaterOrEqual(
   const DecodedKey key_decoded = compare_.decode_key(key);
   while (true) {
     Node* next = x->Next(level);
+    const char* next_key = (next != nullptr) ? next->Key() : nullptr;
+    if (level == 0 && next_key != nullptr) {
+      TEST_SYNC_POINT_CALLBACK(
+          "InlineSkipList::FindGreaterOrEqual:BeforeKeyCompare", &next_key);
+    }
     if (next != nullptr) {
       PREFETCH(next->Next(level), 0, 1);
       if (detect_key_out_of_order && x != head_ &&
-          compare_(x->Key(), next->Key()) >= 0) {
+          compare_(x->Key(), next_key) >= 0) {
         return Corruption(x, next, allow_data_in_errors);
       }
       if (key_validation_callback != nullptr) {
-        auto status =
-            key_validation_callback(next->Key(), allow_data_in_errors);
+        auto status = key_validation_callback(next_key, allow_data_in_errors);
         if (!status.ok()) {
           return status;
         }
       }
     }
     // Make sure the lists are sorted
-    assert(x == head_ || next == nullptr || KeyIsAfterNode(next->Key(), x));
+    assert(sdc_skip_skiplist_assert || x == head_ || next_key == nullptr ||
+           KeyIsAfterNode(next_key, x));
     // Make sure we haven't overshot during our search
-    assert(x == head_ || KeyIsAfterNode(key_decoded, x));
-    int cmp = (next == nullptr || next == last_bigger)
-                  ? 1
-                  : compare_(next->Key(), key_decoded);
+    assert(sdc_skip_skiplist_assert || x == head_ ||
+           KeyIsAfterNode(key_decoded, x));
+    if (next == last_bigger) {
+      next_key = nullptr;
+    }
+    int cmp = (next_key == nullptr) ? 1 : compare_(next_key, key_decoded);
     if (cmp == 0 || (cmp > 0 && level == 0)) {
       *node = next;
       return Status::OK();

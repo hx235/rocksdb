@@ -684,7 +684,9 @@ class NonBatchedOpsStressTest : public StressTest {
 
     const ExpectedValue pre_read_expected_value =
         thread->shared->Get(rand_column_families[0], rand_keys[0]);
+    sdc_injection_active = true;
     Status s = db_->Get(read_opts_copy, cfh, key, &from_db);
+    sdc_injection_active = false;
     const ExpectedValue post_read_expected_value =
         thread->shared->Get(rand_column_families[0], rand_keys[0]);
 
@@ -754,6 +756,15 @@ class NonBatchedOpsStressTest : public StressTest {
                   key.ToString(true).c_str(), rand_keys[0]);
         }
       }
+    } else if (s.IsCorruption() &&
+               (FLAGS_inject_memtable_seek_corruption_one_in > 0 ||
+                FLAGS_inject_block_decode_corruption_one_in > 0)) {
+      // SDC injection is active and protection detected the corruption.
+      // This is expected behavior — the checksum caught our injected bit-flip.
+      fprintf(stdout,
+              "SDC injection detected by protection for key %s (%" PRIi64
+              "): %s\n",
+              key.ToString(true).c_str(), rand_keys[0], s.ToString().c_str());
     } else if (injected_error_count == 0 || !IsErrorInjectedAndRetryable(s)) {
       thread->shared->SetVerificationFailure();
       fprintf(stderr, "error : Get() returns %s for key: %s (%" PRIi64 ").\n",
@@ -843,8 +854,10 @@ class NonBatchedOpsStressTest : public StressTest {
             FaultInjectionIOType::kMetadataRead);
         SharedState::ignore_read_error = false;
       }
+      sdc_injection_active = true;
       db_->MultiGet(readoptionscopy, cfh, num_keys, keys.data(), values.data(),
                     statuses.data());
+      sdc_injection_active = false;
       if (fault_fs_guard) {
         injected_error_count = GetMinInjectedErrorCount(
             fault_fs_guard->GetAndResetInjectedThreadLocalErrorCount(
@@ -971,8 +984,18 @@ class NonBatchedOpsStressTest : public StressTest {
             ThreadStatus::OperationType::OP_MULTIGET);
       }
       if (!tmp_s.ok() && !tmp_s.IsNotFound()) {
-        fprintf(stderr, "Get error: %s\n", s.ToString().c_str());
-        is_consistent = false;
+        if (tmp_s.IsCorruption() &&
+            (FLAGS_inject_memtable_seek_corruption_one_in > 0 ||
+             FLAGS_inject_block_decode_corruption_one_in > 0)) {
+          // SDC injection detected during verification Get — skip check
+        } else {
+          fprintf(stderr, "Get error: %s\n", s.ToString().c_str());
+          is_consistent = false;
+        }
+      } else if (s.IsCorruption() &&
+                 (FLAGS_inject_memtable_seek_corruption_one_in > 0 ||
+                  FLAGS_inject_block_decode_corruption_one_in > 0)) {
+        // SDC injection detected during MultiGet — skip consistency check
       } else if (!s.ok() && tmp_s.ok()) {
         fprintf(stderr,
                 "MultiGet(%d) returned different results with key %s. "
@@ -1028,6 +1051,13 @@ class NonBatchedOpsStressTest : public StressTest {
       } else if (s.IsMergeInProgress() && use_txn) {
         // With txn this is sometimes expected.
         thread->stats.AddGets(1, 1);
+      } else if (s.IsCorruption() &&
+                 (FLAGS_inject_memtable_seek_corruption_one_in > 0 ||
+                  FLAGS_inject_block_decode_corruption_one_in > 0)) {
+        // SDC injection is active and protection detected the corruption.
+        fprintf(stdout,
+                "SDC injection detected by protection in MultiGet: %s\n",
+                s.ToString().c_str());
       } else if (injected_error_count == 0 || !IsErrorInjectedAndRetryable(s)) {
         fprintf(stderr, "MultiGet error: %s\n", s.ToString().c_str());
         thread->stats.AddErrors(1);

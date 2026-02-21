@@ -340,7 +340,8 @@ class BlockIter : public InternalIteratorBase<TValue> {
 
   bool Valid() const override {
     // When status_ is not ok, iter should be invalid.
-    assert(status_.ok() || current_ >= restarts_);
+    assert(sdc_skip_block_valid_assert || status_.ok() ||
+           current_ >= restarts_);
     return current_ < restarts_;
   }
 
@@ -609,6 +610,17 @@ class BlockIter : public InternalIteratorBase<TValue> {
     }
     TEST_SYNC_POINT_CALLBACK("BlockIter::UpdateKey::value",
                              (void*)value_.data());
+    {
+      // Compute correct NextEntryOffset BEFORE potential SDC corruption
+      // redirects value_ to a thread-local buffer.
+      uint32_t real_offset =
+          static_cast<uint32_t>((value_.data() + value_.size()) - data_);
+      struct SDCCorruptArg {
+        Slice* value;
+        uint32_t next_entry_offset;
+      } sdc_arg{&value_, real_offset};
+      TEST_SYNC_POINT_CALLBACK("BlockIter::UpdateKey::corrupt_value", &sdc_arg);
+    }
     TEST_SYNC_POINT_CALLBACK("Block::VerifyChecksum::checksum_len",
                              &protection_bytes_per_key_);
     if (protection_bytes_per_key_ > 0) {
@@ -656,6 +668,14 @@ class BlockIter : public InternalIteratorBase<TValue> {
  public:
   // Return the offset in data_ just past the end of the current entry.
   inline uint32_t NextEntryOffset() const {
+#ifndef NDEBUG
+    // When SDC injection has redirected value_ to a thread-local copy,
+    // use the saved offset (computed before corruption) so that iterator
+    // navigation is not disrupted.
+    if (sdc_saved_next_entry_offset != 0) {
+      return sdc_saved_next_entry_offset;
+    }
+#endif
     // NOTE: We don't support blocks bigger than 2GB
     return static_cast<uint32_t>((value_.data() + value_.size()) - data_);
   }
