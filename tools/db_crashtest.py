@@ -1424,6 +1424,27 @@ def print_output_and_exit_on_error(stdout, stderr, print_stderr_separately=False
     sys.exit(2)
 
 
+def check_blob_files_transition(cmd_params, prev_blob_enabled):
+    """Check if blob files configuration changed from enabled to disabled.
+
+    Returns the current blob_enabled value. If transitioning from enabled to
+    disabled, sets destroy_db_initially=1 to avoid orphaned blob file references
+    that cause "Corruption: Invalid blob file number" errors on recovery.
+    """
+    cur_blob_enabled = 1 if (
+        cmd_params.get("enable_blob_files", 0) == 1
+        or cmd_params.get("allow_setting_blob_options_dynamically", 0) == 1
+    ) else 0
+    if prev_blob_enabled == 1 and cur_blob_enabled == 0:
+        print(
+            "Blob files were enabled in previous iteration but disabled "
+            "now. Setting `destroy_db_initially=1` to avoid orphaned blob "
+            "file references.\n"
+        )
+        cmd_params["destroy_db_initially"] = 1
+    return cur_blob_enabled
+
+
 def cleanup_after_success(dbname):
     # Use db_stress --destroy_db_and_exit, which simplifies remote DB cleanup
     cleanup_cmd_parts = [stress_cmd, "--destroy_db_and_exit=1", "--db=" + dbname]
@@ -1504,8 +1525,14 @@ def blackbox_crash_main(args, unknown_args):
         + "\n"
     )
 
+    prev_blob_enabled = -1
     while time.time() < exit_time:
         apply_random_seed_per_iteration()
+
+        prev_blob_enabled = check_blob_files_transition(
+            cmd_params, prev_blob_enabled
+        )
+
         cmd = gen_cmd(
             dict(list(cmd_params.items()) + list({"db": dbname}.items())), unknown_args
         )
@@ -1573,6 +1600,7 @@ def whitebox_crash_main(args, unknown_args):
     kill_random_test = cmd_params["random_kill_odd"]
     kill_mode = 0
     prev_compaction_style = -1
+    prev_blob_enabled = -1
     succeeded = True
     hit_timeout = False
     while time.time() < exit_time:
@@ -1664,6 +1692,10 @@ def whitebox_crash_main(args, unknown_args):
             )
             cmd_params["destroy_db_initially"] = 1
         prev_compaction_style = cur_compaction_style
+
+        prev_blob_enabled = check_blob_files_transition(
+            cmd_params, prev_blob_enabled
+        )
 
         cmd = gen_cmd(
             dict(
