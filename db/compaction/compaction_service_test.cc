@@ -2892,6 +2892,83 @@ TEST_F(ResumableCompactionKeyTypeTest, CancelAndResumeWithTimedPut) {
 
   VerifyResumeBytes();
 }
+
+// Regression test: when skip_stats_update_on_db_open=true, the remote worker
+// fails to initialize num_entries/num_range_deletions from table properties,
+// so FileIsStandAloneRangeTombstone() returns false. The primary filters the
+// data file but the remote worker doesn't, causing input record count mismatch.
+TEST_F(CompactionServiceTest,
+       StandaloneRangeDeletionWithSkipStatsUpdateOnOpen) {
+  Options options = CurrentOptions();
+  options.skip_stats_update_on_db_open = true;
+  options.compaction_style = kCompactionStyleUniversal;
+
+  ReopenWithCompactionService(&options);
+
+  // Ingest two data files at the bottom level.
+  std::vector<std::string> files;
+  {
+    SstFileWriter sst_file_writer(EnvOptions(), options);
+    std::string file1 = dbname_ + "/file1.sst";
+    ASSERT_OK(sst_file_writer.Open(file1));
+    ASSERT_OK(sst_file_writer.Put("a", "a1"));
+    ASSERT_OK(sst_file_writer.Put("b", "b1"));
+    ASSERT_OK(sst_file_writer.Finish());
+    files.push_back(std::move(file1));
+
+    std::string file2 = dbname_ + "/file2.sst";
+    ASSERT_OK(sst_file_writer.Open(file2));
+    ASSERT_OK(sst_file_writer.Put("x", "x1"));
+    ASSERT_OK(sst_file_writer.Put("y", "y1"));
+    ASSERT_OK(sst_file_writer.Finish());
+    files.push_back(std::move(file2));
+  }
+
+  IngestExternalFileOptions ifo;
+  ASSERT_OK(db_->IngestExternalFile(files, ifo));
+  ASSERT_EQ(Get("a"), "a1");
+  ASSERT_EQ(Get("b"), "b1");
+  ASSERT_EQ(Get("x"), "x1");
+  ASSERT_EQ(Get("y"), "y1");
+
+  auto my_cs = GetCompactionService();
+  uint64_t comp_num = my_cs->GetCompactionNum();
+
+  // Ingest a standalone range deletion covering the data files, plus new data.
+  files.clear();
+  {
+    SstFileWriter sst_file_writer(EnvOptions(), options);
+
+    std::string del_file = dbname_ + "/del.sst";
+    ASSERT_OK(sst_file_writer.Open(del_file));
+    ASSERT_OK(sst_file_writer.DeleteRange("a", "z"));
+    ASSERT_OK(sst_file_writer.Finish());
+    files.push_back(std::move(del_file));
+
+    std::string file3 = dbname_ + "/file3.sst";
+    ASSERT_OK(sst_file_writer.Open(file3));
+    ASSERT_OK(sst_file_writer.Put("a", "a2"));
+    ASSERT_OK(sst_file_writer.Put("b", "b2"));
+    ASSERT_OK(sst_file_writer.Finish());
+    files.push_back(std::move(file3));
+
+    std::string file4 = dbname_ + "/file4.sst";
+    ASSERT_OK(sst_file_writer.Open(file4));
+    ASSERT_OK(sst_file_writer.Put("x", "x2"));
+    ASSERT_OK(sst_file_writer.Put("y", "y2"));
+    ASSERT_OK(sst_file_writer.Finish());
+    files.push_back(std::move(file4));
+  }
+
+  ASSERT_OK(db_->IngestExternalFile(files, ifo));
+
+  // WaitForCompact triggers auto compaction including the standalone range
+  // deletion file and the old data files.
+  Status s = db_->WaitForCompact(WaitForCompactOptions());
+  ASSERT_GE(my_cs->GetCompactionNum(), comp_num + 1);
+
+  ASSERT_OK(s);
+}
 }  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
